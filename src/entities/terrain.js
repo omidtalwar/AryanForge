@@ -24,6 +24,9 @@ export const LOCATIONS = {
   iceland:      { lat:  64.1265, lon:  -21.8174, zoom: 13, name: 'Iceland Highlands' },
   dolomites:    { lat:  46.4102, lon:   11.8440, zoom: 13, name: 'Dolomites, Italy' },
   patagonia:    { lat: -41.1335, lon:  -71.3103, zoom: 13, name: 'Patagonia, Argentina' },
+  afghanistan:  { lat:  35.2000, lon:   69.5000, zoom: 12, name: 'Afghanistan - Hindu Kush' },
+  kabul_valley: { lat:  34.5553, lon:   69.2075, zoom: 13, name: 'Afghanistan - Kabul Valley' },
+  wakhan:       { lat:  37.1000, lon:   73.5000, zoom: 12, name: 'Afghanistan - Wakhan Corridor' },
 };
 
 const MESH_SIZE = 100;  // world units across (agents live in ±48 units)
