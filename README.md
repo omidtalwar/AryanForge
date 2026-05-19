@@ -1,4 +1,4 @@
-# Sim Sandbox
+# AryanForge
 
 A 3D scenario simulation sandbox built with **Vite + Three.js + Rapier.js (WASM physics)**.  
 Runs entirely in the browser — no server required.
