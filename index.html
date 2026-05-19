@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sim Sandbox</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0f;
+      color: #e0e0e0;
+      font-family: 'Courier New', monospace;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+    canvas { display: block; }
+
+    /* ── Control Panel (top-left) ── */
+    #control-panel {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      background: rgba(10,10,20,0.88);
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 14px 16px;
+      min-width: 260px;
+      max-width: 300px;
+      z-index: 100;
+      backdrop-filter: blur(6px);
+    }
+    #control-panel h2 {
+      font-size: 13px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #7878c8;
+      margin-bottom: 12px;
+    }
+    .field-group { margin-bottom: 10px; }
+    .field-group label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    .field-group label span { color: #c0c0e0; }
+    select, input[type=range] {
+      width: 100%;
+      background: #15152a;
+      border: 1px solid #2a2a4a;
+      color: #e0e0e0;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      outline: none;
+    }
+    input[type=range] { padding: 0; cursor: pointer; }
+    .btn-row { display: flex; gap: 8px; margin-top: 14px; }
+    button {
+      flex: 1;
+      padding: 7px 0;
+      border: 1px solid #3a3a6a;
+      border-radius: 5px;
+      background: #1a1a3a;
+      color: #c0c0f0;
+      font-family: inherit;
+      font-size: 12px;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #2a2a5a; }
+    button#btn-run { border-color: #4a8a4a; color: #80e080; background: #0a2a0a; }
+    button#btn-run:hover { background: #153015; }
+    button#btn-reset { border-color: #8a4a4a; color: #e08080; }
+
+    /* ── Stats Panel (top-right) ── */
+    #stats-panel {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      background: rgba(10,10,20,0.88);
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      padding: 14px 16px;
+      min-width: 200px;
+      z-index: 100;
+      backdrop-filter: blur(6px);
+    }
+    #stats-panel h2 {
+      font-size: 13px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #7878c8;
+      margin-bottom: 10px;
+    }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .stat-row .label { color: #666; }
+    .stat-row .value { color: #c0e0c0; font-weight: bold; }
+    .stat-row .value.dead { color: #e08080; }
+    #time-scale-toggle {
+      margin-top: 10px;
+      width: 100%;
+      padding: 5px;
+      font-size: 11px;
+      letter-spacing: 1px;
+    }
+
+    /* ── Hotkey hint ── */
+    #hotkeys {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      font-size: 10px;
+      color: #444;
+      z-index: 100;
+      line-height: 1.6;
+    }
+
+    /* ── End-of-scenario summary card ── */
+    #summary-card {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10,10,20,0.95);
+      border: 1px solid #4a4a8a;
+      border-radius: 10px;
+      padding: 18px 28px;
+      text-align: center;
+      z-index: 200;
+      display: none;
+      min-width: 300px;
+      backdrop-filter: blur(8px);
+    }
+    #summary-card h3 {
+      font-size: 14px;
+      letter-spacing: 2px;
+      color: #a0a0ff;
+      margin-bottom: 10px;
+    }
+    #summary-card p { font-size: 12px; color: #bbb; margin: 4px 0; }
+    #summary-card .highlight { color: #80e080; font-size: 16px; }
+
+    /* ── Loading overlay ── */
+    #loading {
+      position: fixed;
+      inset: 0;
+      background: #0a0a0f;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 999;
+      gap: 16px;
+    }
+    #loading h1 { font-size: 18px; letter-spacing: 4px; color: #6060c0; }
+    #loading p { font-size: 12px; color: #444; }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid #2a2a4a;
+      border-top-color: #6060c0;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Scenario-specific param sections ── */
+    .param-section { display: none; }
+    .param-section.active { display: block; }
+  </style>
+</head>
+<body>
+  <!-- Loading overlay -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <h1>SIM SANDBOX</h1>
+    <p>Initializing physics engine...</p>
+  </div>
+
+  <!-- Control panel -->
+  <div id="control-panel">
+    <h2>Scenario</h2>
+    <div class="field-group">
+      <label>Scenario</label>
+      <select id="scenario-select">
+        <option value="flood">Flood</option>
+        <option value="battle">Battle</option>
+        <option value="endurance">Endurance</option>
+      </select>
+    </div>
+
+    <!-- Flood params -->
+    <div id="params-flood" class="param-section active">
+      <div class="field-group">
+        <label>Agents <span id="flood-count-val">100</span></label>
+        <input type="range" id="flood-count" min="10" max="500" value="100" />
+      </div>
+      <div class="field-group">
+        <label>Water Rise % <span id="flood-rise-val">80</span></label>
+        <input type="range" id="flood-rise" min="0" max="100" value="80" />
+      </div>
+      <div class="field-group">
+        <label>Rise Speed</label>
+        <select id="flood-speed">
+          <option value="0.3">Slow</option>
+          <option value="0.8" selected>Medium</option>
+          <option value="2.0">Fast</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Battle params -->
+    <div id="params-battle" class="param-section">
+      <div class="field-group">
+        <label>Team A <span id="battle-a-val">50</span></label>
+        <input type="range" id="battle-a" min="5" max="250" value="50" />
+      </div>
+      <div class="field-group">
+        <label>Team B <span id="battle-b-val">50</span></label>
+        <input type="range" id="battle-b" min="5" max="250" value="50" />
+      </div>
+      <div class="field-group">
+        <label>Speed <span id="battle-speed-val">5</span></label>
+        <input type="range" id="battle-speed" min="1" max="15" value="5" />
+      </div>
+      <div class="field-group">
+        <label>Attack Range <span id="battle-range-val">2</span></label>
+        <input type="range" id="battle-range" min="1" max="8" value="2" />
+      </div>
+    </div>
+
+    <!-- Endurance params -->
+    <div id="params-endurance" class="param-section">
+      <div class="field-group">
+        <label>Agents <span id="end-count-val">80</span></label>
+        <input type="range" id="end-count" min="10" max="500" value="80" />
+      </div>
+      <div class="field-group">
+        <label>Duration (sim-hours) <span id="end-dur-val">8</span></label>
+        <input type="range" id="end-dur" min="1" max="24" value="8" />
+      </div>
+      <div class="field-group">
+        <label>Terrain Difficulty</label>
+        <select id="end-terrain">
+          <option value="0.5">Easy</option>
+          <option value="1.0" selected>Medium</option>
+          <option value="2.0">Hard</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="btn-row">
+      <button id="btn-run">&#9654; RUN</button>
+      <button id="btn-reset">&#x21BA; RESET</button>
+    </div>
+  </div>
+
+  <!-- Stats panel -->
+  <div id="stats-panel">
+    <h2>Stats</h2>
+    <div class="stat-row">
+      <span class="label">Alive</span>
+      <span class="value" id="stat-alive">0</span>
+    </div>
+    <div class="stat-row">
+      <span class="label">Dead</span>
+      <span class="value dead" id="stat-dead">0</span>
+    </div>
+    <div class="stat-row">
+      <span class="label">Sim Time</span>
+      <span class="value" id="stat-time">00:00:00</span>
+    </div>
+    <div class="stat-row">
+      <span class="label">FPS</span>
+      <span class="value" id="stat-fps">--</span>
+    </div>
+    <button id="time-scale-toggle">&#x23F1; REAL-TIME (1x)</button>
+  </div>
+
+  <!-- Hotkeys -->
+  <div id="hotkeys">
+    SPACE &mdash; pause/resume &nbsp;|&nbsp; R &mdash; reset &nbsp;|&nbsp; drag &mdash; orbit &nbsp;|&nbsp; scroll &mdash; zoom
+  </div>
+
+  <!-- End-of-scenario summary -->
+  <div id="summary-card">
+    <h3>&mdash; SCENARIO COMPLETE &mdash;</h3>
+    <p id="sum-result" class="highlight"></p>
+    <p id="sum-survival"></p>
+    <p id="sum-duration"></p>
+    <p id="sum-hint" style="color:#444;margin-top:8px;font-size:10px;">Press R to reset</p>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
