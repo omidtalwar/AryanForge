@@ -5,43 +5,40 @@
 
 import { initScene }         from './engine/scene.js';
 import { initPhysics, createGroundCollider } from './engine/physics.js';
-import { startLoop, stopLoop, togglePause, getSimTime, getFPS, isPaused } from './engine/loop.js';
+import { startLoop, togglePause, getSimTime, getFPS } from './engine/loop.js';
 import { createTerrain }     from './entities/terrain.js';
 import { getScenario }       from './scenarios/index.js';
-import { initControlPanel }  from './ui/controlPanel.js';
+import { initControlPanel, readLocation } from './ui/controlPanel.js';
 import { updateStats, hideSummary } from './ui/stats.js';
-import { toggleTimeScale, getTimeScale, isTimelapse } from './utils/timeScale.js';
+import { toggleTimeScale, isTimelapse } from './utils/timeScale.js';
 import { resumeAudio } from './utils/sound.js';
 
-let sceneCtx   = null;   // { renderer, scene, camera, controls }
+let sceneCtx       = null;
 let activeScenario = null;
-let activeKey  = null;
-let isRunning  = false;
+let activeKey      = null;
 
 async function bootstrap() {
-  // ── Initialize Three.js scene ─────────────────────────────────────────────
+  // ── Scene ──────────────────────────────────────────────────────────────────
   sceneCtx = initScene();
   const { renderer, scene, camera, controls } = sceneCtx;
 
-  // ── Initialize Rapier physics ─────────────────────────────────────────────
+  // ── Physics ────────────────────────────────────────────────────────────────
   await initPhysics();
   createGroundCollider();
 
-  // ── Generate terrain ──────────────────────────────────────────────────────
-  createTerrain(scene);
+  // ── Real-world terrain (async tile fetch) ──────────────────────────────────
+  await createTerrain(scene, readLocation());
 
-  // ── UI wiring ─────────────────────────────────────────────────────────────
-  initControlPanel(handleRun, handleReset);
+  // ── UI ─────────────────────────────────────────────────────────────────────
+  initControlPanel(handleRun, handleReset, handleLoadMap);
 
   document.getElementById('time-scale-toggle').addEventListener('click', () => {
     const scale = toggleTimeScale();
     const btn = document.getElementById('time-scale-toggle');
-    btn.textContent = isTimelapse()
-      ? `TIME-LAPSE (${scale}x)`
-      : `REAL-TIME (1x)`;
+    btn.textContent = isTimelapse() ? `TIME-LAPSE (${scale}x)` : `REAL-TIME (1x)`;
   });
 
-  // Unblock AudioContext on first user gesture (browser autoplay policy)
+  // Unblock AudioContext on first user gesture
   document.addEventListener('click', resumeAudio, { once: true });
   document.addEventListener('keydown', resumeAudio, { once: true });
 
@@ -51,63 +48,50 @@ async function bootstrap() {
     if (e.code === 'KeyR')  { handleReset(); }
   });
 
-  // ── Main loop: update + render ────────────────────────────────────────────
+  // ── Main loop ─────────────────────────────────────────────────────────────
   startLoop(
-    // Physics update tick
-    (dt, simTime) => {
-      if (activeScenario) activeScenario.update(dt, simTime);
-    },
-    // Render frame
+    (dt, simTime) => { if (activeScenario) activeScenario.update(dt, simTime); },
     () => {
       controls.update();
-
-      // Update stats every frame
       const counts = activeScenario?.getCounts() ?? { alive: 0, dead: 0 };
-      updateStats({
-        alive:   counts.alive,
-        dead:    counts.dead,
-        simTime: getSimTime(),
-        fps:     getFPS(),
-      });
-
+      updateStats({ alive: counts.alive, dead: counts.dead, simTime: getSimTime(), fps: getFPS() });
       renderer.render(scene, camera);
     }
   );
 
-  // ── Hide loading overlay ──────────────────────────────────────────────────
   document.getElementById('loading').style.display = 'none';
 }
 
-/** Start or restart the selected scenario with current params. */
 function handleRun(key, params) {
   const scenario = getScenario(key);
   if (!scenario) return;
-
-  // Teardown any currently running scenario
-  if (activeScenario) {
-    activeScenario.teardown(sceneCtx.scene);
-  }
-
+  if (activeScenario) activeScenario.teardown(sceneCtx.scene);
   hideSummary();
-  activeKey = key;
+  activeKey      = key;
   activeScenario = scenario;
   activeScenario.init(sceneCtx.scene, params);
-  isRunning = true;
 }
 
-/** Reset: teardown scenario, clear summary. */
 function handleReset() {
   if (activeScenario) {
     activeScenario.teardown(sceneCtx.scene);
     activeScenario = null;
-    activeKey = null;
+    activeKey      = null;
   }
   hideSummary();
-  isRunning = false;
+}
+
+/** Reload terrain from the currently selected location, reset any active scenario. */
+async function handleLoadMap() {
+  handleReset();
+  const loadingEl = document.getElementById('loading');
+  if (loadingEl) loadingEl.style.display = 'flex';
+  await createTerrain(sceneCtx.scene, readLocation());
+  if (loadingEl) loadingEl.style.display = 'none';
 }
 
 bootstrap().catch(err => {
   console.error('Bootstrap failed:', err);
-  const loading = document.getElementById('loading');
-  if (loading) loading.querySelector('p').textContent = 'Error: ' + err.message;
+  const p = document.querySelector('#loading p');
+  if (p) p.textContent = 'Error: ' + err.message;
 });

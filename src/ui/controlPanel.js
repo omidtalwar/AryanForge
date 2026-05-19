@@ -1,10 +1,10 @@
 /**
- * controlPanel.js — Wires up scenario picker, parameter sliders, and RUN/RESET buttons.
- * Calls back into main.js via onRun(scenarioKey, params) and onReset().
+ * controlPanel.js — Wires up map selector, scenario picker, parameter sliders,
+ * and RUN / RESET / LOAD MAP buttons.
  */
 
-/** Attach all UI event listeners. onRun and onReset are callbacks from main.js. */
-export function initControlPanel(onRun, onReset) {
+/** Attach all UI event listeners. */
+export function initControlPanel(onRun, onReset, onLoadMap) {
   const scenarioSelect = document.getElementById('scenario-select');
 
   // Show/hide param sections when scenario changes
@@ -14,23 +14,27 @@ export function initControlPanel(onRun, onReset) {
   });
 
   // Sync all sliders to their display spans
-  wireSlider('flood-count',    'flood-count-val');
-  wireSlider('flood-rise',     'flood-rise-val');
-  wireSlider('battle-a',       'battle-a-val');
-  wireSlider('battle-b',       'battle-b-val');
-  wireSlider('battle-speed',   'battle-speed-val');
-  wireSlider('battle-range',   'battle-range-val');
-  wireSlider('end-count',      'end-count-val');
-  wireSlider('end-dur',        'end-dur-val');
+  wireSlider('flood-count',  'flood-count-val');
+  wireSlider('flood-rise',   'flood-rise-val');
+  wireSlider('battle-a',     'battle-a-val');
+  wireSlider('battle-b',     'battle-b-val');
+  wireSlider('battle-speed', 'battle-speed-val');
+  wireSlider('battle-range', 'battle-range-val');
+  wireSlider('end-count',    'end-count-val');
+  wireSlider('end-dur',      'end-dur-val');
 
-  // RUN button
   document.getElementById('btn-run').addEventListener('click', () => {
-    const key = scenarioSelect.value;
-    onRun(key, readParams(key));
+    onRun(scenarioSelect.value, readParams(scenarioSelect.value));
   });
 
-  // RESET button
   document.getElementById('btn-reset').addEventListener('click', onReset);
+
+  document.getElementById('btn-load-map')?.addEventListener('click', onLoadMap);
+}
+
+/** Return the currently selected location key from the map dropdown. */
+export function readLocation() {
+  return document.getElementById('location-select')?.value ?? 'grand_canyon';
 }
 
 /** Read current parameter values for the given scenario key. */

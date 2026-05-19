@@ -1,7 +1,7 @@
 /**
  * flood.js — Rising water scenario.
- * A translucent blue plane rises over time; agents flee to high ground.
- * Agents that remain submerged for 2+ seconds drown.
+ * Water is a multi-segment mesh with animated vertex-wave displacement.
+ * Agents flee to high ground; submersion for 2+ sec = drown.
  */
 
 import * as THREE from 'three';
@@ -10,50 +10,75 @@ import { sampleHeightWorld, getMaxTerrainHeight } from '../entities/terrain.js';
 import { showSummary } from '../ui/stats.js';
 import { startWaterAmbient, stopAmbient, playVictory } from '../utils/sound.js';
 
-let waterMesh = null;
-let waterY = 0;        // current water surface Y
-let targetWaterY = 0;  // final water surface Y (scenario end)
-let riseSpeed = 0;     // units/sec at 1x timescale
-let started = false;
-let done = false;
-let drownCheckTimer = 0;
+const WATER_SEGS = 48; // enough verts for smooth wave animation
 
-/** Build the water plane mesh. Called once on scenario init. */
+let waterMesh  = null;
+let waterY     = 0;
+let targetWaterY = 0;
+let riseSpeed  = 0;
+let started    = false;
+let done       = false;
+let drownTimer = 0;
+let waveTime   = 0;
+
+// ── Water plane ───────────────────────────────────────────────────────────────
+
 function createWaterPlane(scene) {
-  const geo = new THREE.PlaneGeometry(200, 200, 1, 1);
+  const geo = new THREE.PlaneGeometry(220, 220, WATER_SEGS, WATER_SEGS);
   geo.rotateX(-Math.PI / 2);
 
   const mat = new THREE.MeshPhongMaterial({
-    color: 0x1a4aff,
+    color:      new THREE.Color(0x0055aa),
+    emissive:   new THREE.Color(0x001133),
     transparent: true,
-    opacity: 0.52,
-    shininess: 120,
-    specular: new THREE.Color(0x88aaff),
-    side: THREE.FrontSide,
+    opacity:    0.72,
+    shininess:  180,
+    specular:   new THREE.Color(0x88ccff),
+    side:       THREE.FrontSide,
+    depthWrite: false,
   });
 
   waterMesh = new THREE.Mesh(geo, mat);
-  waterMesh.position.y = -20; // start below terrain
+  waterMesh.position.y = -20;
   scene.add(waterMesh);
 }
 
-// ── Public scenario API ───────────────────────────────────────────────────────
+/** Displace water vertices using overlapping sine waves and recompute normals. */
+function animateWater(dt) {
+  if (!waterMesh) return;
+  waveTime += dt;
+  const pos = waterMesh.geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const wave =
+      Math.sin(x * 0.14 + waveTime * 1.8) * 0.10 +
+      Math.sin(z * 0.11 + waveTime * 1.4) * 0.08 +
+      Math.sin((x + z) * 0.07 + waveTime * 2.2) * 0.05 +
+      Math.sin((x - z) * 0.09 + waveTime * 1.1) * 0.04;
+    pos.setY(i, wave);
+  }
+  pos.needsUpdate = true;
+  waterMesh.geometry.computeVertexNormals();
+
+  // Subtle colour pulse to simulate depth variation
+  const t = waveTime * 0.3;
+  waterMesh.material.color.setHSL(0.59, 0.85, 0.28 + Math.sin(t) * 0.03);
+  waterMesh.material.emissive.setHSL(0.62, 0.9, 0.04 + Math.sin(t * 1.3) * 0.015);
+}
+
+// ── Scenario API ──────────────────────────────────────────────────────────────
 
 export const flood = {
-  /** Spawn agents and initialize water. */
   init(scene, params) {
-    waterY = -20;
-    done = false;
-    started = false;
+    waterY = -20; done = false; started = false; waveTime = 0;
 
     const { agentCount = 100, risePercent = 80, speed = 0.8 } = params;
-    const maxH = getMaxTerrainHeight();
-    targetWaterY = (risePercent / 100) * maxH;
-    riseSpeed = speed;
+    targetWaterY = (risePercent / 100) * getMaxTerrainHeight();
+    riseSpeed    = speed;
 
     createWaterPlane(scene);
 
-    // Spawn agents randomly across the terrain
     for (let i = 0; i < agentCount; i++) {
       const x = (Math.random() - 0.5) * 90;
       const z = (Math.random() - 0.5) * 90;
@@ -65,31 +90,24 @@ export const flood = {
     startWaterAmbient();
   },
 
-  /** Called every physics tick. dt is scaled sim-seconds. */
-  update(dt, _simTime) {
+  update(dt, simTime) {
     if (!started || done) return;
 
-    // Rise water
+    // Rise
     if (waterY < targetWaterY) {
       waterY = Math.min(waterY + riseSpeed * dt, targetWaterY);
       if (waterMesh) waterMesh.position.y = waterY;
-
-      // Gentle wave animation on the water plane
-      if (waterMesh) {
-        waterMesh.rotation.x = -Math.PI / 2 + Math.sin(Date.now() * 0.0005) * 0.015;
-      }
     }
 
-    // Update agents with water level hint
-    const hints = { waterY, allAgents: agents };
-    for (const a of agents) {
-      a.update(dt, hints);
-    }
+    animateWater(dt);
 
-    // Drown check every 0.25 sim-sec (not every tick for perf)
-    drownCheckTimer += dt;
-    if (drownCheckTimer >= 0.25) {
-      drownCheckTimer = 0;
+    // Agent update
+    for (const a of agents) a.update(dt, { waterY, allAgents: agents });
+
+    // Drown check (every 0.25 sim-sec)
+    drownTimer += dt;
+    if (drownTimer >= 0.25) {
+      drownTimer = 0;
       for (const a of agents) {
         if (!a.alive) continue;
         if (a.y <= waterY + 0.5) {
@@ -101,38 +119,29 @@ export const flood = {
       }
     }
 
-    // End condition: all agents dead or water peaked and survivors remain
+    // End conditions
     const alive = agents.filter(a => a.alive).length;
     const total = agents.length;
-    const waterDone = waterY >= targetWaterY;
-
     if (!done && alive === 0) {
-      done = true;
-      stopAmbient();
-      showSummary({ result: 'All agents drowned', survivalPct: 0, simTime: _simTime });
-    } else if (!done && waterDone) {
-      done = true;
-      stopAmbient();
-      playVictory();
+      done = true; stopAmbient();
+      showSummary({ result: 'All agents drowned', survivalPct: 0, simTime });
+    } else if (!done && waterY >= targetWaterY) {
+      done = true; stopAmbient(); playVictory();
       showSummary({
         result: `${alive} survived the flood!`,
         survivalPct: Math.round((alive / total) * 100),
-        simTime: _simTime,
+        simTime,
       });
     }
   },
 
-  /** Remove water plane and all agents. */
   teardown(scene) {
     if (waterMesh) { scene.remove(waterMesh); waterMesh = null; }
     clearAgents(scene);
     stopAmbient();
-    waterY = 0;
-    started = false;
-    done = false;
+    waterY = 0; started = false; done = false;
   },
 
-  /** Live agent counts for the stats panel. */
   getCounts() {
     const alive = agents.filter(a => a.alive).length;
     return { alive, dead: agents.length - alive };
