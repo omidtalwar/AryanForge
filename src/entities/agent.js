@@ -1,6 +1,6 @@
 /**
- * agent.js — Humanoid agent: articulated mesh (head, torso, arms, legs),
- * kinematic physics body, walk-cycle animation, and state machine.
+ * agent.js — Humanoid agent: articulated mesh with knee/elbow joints,
+ * PBR materials, terrain slope alignment, and state machine.
  */
 
 import * as THREE from 'three';
@@ -8,38 +8,41 @@ import { createAgentBody, removeBody } from '../engine/physics.js';
 import { sampleHeightWorld } from './terrain.js';
 import { playDeath, playHit, playSplash } from '../utils/sound.js';
 
-// ── Shared geometries (created once, reused by every agent) ───────────────────
+// ── Shared geometries (created once) ──────────────────────────────────────────
 const G = {
-  head:       new THREE.SphereGeometry(0.21, 12, 9),
-  helmet:     new THREE.SphereGeometry(0.235, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55),
-  torso:      new THREE.BoxGeometry(0.46, 0.52, 0.24),
-  hip:        new THREE.BoxGeometry(0.38, 0.2, 0.22),
-  upperArm:   new THREE.CylinderGeometry(0.075, 0.075, 0.4, 7),
-  lowerArm:   new THREE.CylinderGeometry(0.065, 0.055, 0.35, 7),
-  hand:       new THREE.SphereGeometry(0.075, 7, 6),
-  upperLeg:   new THREE.CylinderGeometry(0.1, 0.09, 0.44, 7),
-  lowerLeg:   new THREE.CylinderGeometry(0.085, 0.08, 0.4, 7),
-  foot:       new THREE.BoxGeometry(0.13, 0.1, 0.24),
-  sword:      new THREE.BoxGeometry(0.06, 0.7, 0.04),
-  swordGuard: new THREE.BoxGeometry(0.28, 0.055, 0.055),
-  backpack:   new THREE.BoxGeometry(0.22, 0.28, 0.12),
+  head:       new THREE.SphereGeometry(0.21, 14, 10),
+  eyeWhite:   new THREE.SphereGeometry(0.046, 7, 6),
+  eyePupil:   new THREE.SphereGeometry(0.030, 6, 5),
+  helmet:     new THREE.SphereGeometry(0.238, 12, 9, 0, Math.PI * 2, 0, Math.PI * 0.58),
+  torso:      new THREE.CylinderGeometry(0.20, 0.24, 0.52, 9),
+  hip:        new THREE.CylinderGeometry(0.21, 0.19, 0.20, 9),
+  upperArm:   new THREE.CylinderGeometry(0.075, 0.068, 0.40, 8),
+  lowerArm:   new THREE.CylinderGeometry(0.063, 0.053, 0.35, 7),
+  hand:       new THREE.SphereGeometry(0.075, 8, 6),
+  upperLeg:   new THREE.CylinderGeometry(0.100, 0.088, 0.44, 8),
+  lowerLeg:   new THREE.CylinderGeometry(0.082, 0.076, 0.40, 7),
+  foot:       new THREE.BoxGeometry(0.13, 0.10, 0.26),
+  sword:      new THREE.BoxGeometry(0.055, 0.72, 0.040),
+  swordGuard: new THREE.BoxGeometry(0.28,  0.055, 0.055),
+  backpack:   new THREE.BoxGeometry(0.22,  0.28,  0.12),
 };
 
-// ── Shared materials per team + skin/dark ──────────────────────────────────────
+// ── PBR materials ──────────────────────────────────────────────────────────────
 const M = {
-  skin: new THREE.MeshLambertMaterial({ color: 0xf0c090 }),
-  dark: new THREE.MeshLambertMaterial({ color: 0x2a2a2a }),
-  boot: new THREE.MeshLambertMaterial({ color: 0x3a2810 }),
-  sword: new THREE.MeshLambertMaterial({ color: 0xc8c8c8, metalness: 0 }),
-  red:   new THREE.MeshLambertMaterial({ color: 0xcc2222 }),
-  redH:  new THREE.MeshLambertMaterial({ color: 0x991111 }),
-  blue:  new THREE.MeshLambertMaterial({ color: 0x2255cc }),
-  blueH: new THREE.MeshLambertMaterial({ color: 0x113399 }),
-  white: new THREE.MeshLambertMaterial({ color: 0xcccccc }),
-  whiteH:new THREE.MeshLambertMaterial({ color: 0x888888 }),
+  skin:   new THREE.MeshStandardMaterial({ color: 0xf5c9a0, roughness: 0.82, metalness: 0.00 }),
+  dark:   new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.88, metalness: 0.12 }),
+  boot:   new THREE.MeshStandardMaterial({ color: 0x3a2810, roughness: 0.95, metalness: 0.00 }),
+  sword:  new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.25, metalness: 0.85 }),
+  eye:    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.50, metalness: 0.00 }),
+  pupil:  new THREE.MeshStandardMaterial({ color: 0x1a1a2a, roughness: 0.50, metalness: 0.00 }),
+  red:    new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.70, metalness: 0.05 }),
+  redH:   new THREE.MeshStandardMaterial({ color: 0x881111, roughness: 0.55, metalness: 0.25 }),
+  blue:   new THREE.MeshStandardMaterial({ color: 0x2255cc, roughness: 0.70, metalness: 0.05 }),
+  blueH:  new THREE.MeshStandardMaterial({ color: 0x113399, roughness: 0.55, metalness: 0.25 }),
+  white:  new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.78, metalness: 0.04 }),
+  whiteH: new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.65, metalness: 0.15 }),
 };
 
-// Per-team: [bodyMat, helmetMat]
 const TEAM_MATS = {
   red:   [M.red,   M.redH],
   blue:  [M.blue,  M.blueH],
@@ -81,26 +84,25 @@ class Agent {
     this.alive   = true;
 
     this.x = x;
-    this.y = sampleHeightWorld(x, z) + 1.55;
+    this.y = sampleHeightWorld(x, z);   // group.position.y = feet on ground
     this.z = z;
 
     this.vx = 0;
     this.vz = 0;
     this.underWaterTime = 0;
-    this.deadTimer = 0;
-    this.wanderAngle = Math.random() * Math.PI * 2;
-    this.wanderTimer = 0;
-    this.attackTimer = 0;
-    this.target = null;
+    this.deadTimer      = 0;
+    this.wanderAngle    = Math.random() * Math.PI * 2;
+    this.wanderTimer    = 0;
+    this.attackTimer    = 0;
+    this.target         = null;
 
-    // Walk animation accumulator
     this.walkPhase = Math.random() * Math.PI * 2;
+    this._pitch    = 0;   // forward tilt from slope
+    this._roll     = 0;   // lateral tilt from slope
 
-    // Build the humanoid mesh hierarchy
     this._buildMesh(scene, team);
 
-    // Physics body
-    const { rigidBody } = createAgentBody(this.x, this.y, this.z);
+    const { rigidBody } = createAgentBody(this.x, this.y + 0.9, this.z);
     this.rigidBody = rigidBody;
   }
 
@@ -111,117 +113,144 @@ class Agent {
     const isBattle = (team === 'red' || team === 'blue');
 
     this.group = new THREE.Group();
+    this.group.rotation.order = 'YXZ';   // facing first, then slope tilt
 
-    // --- Head ---
+    // HEAD
     this.headMesh = new THREE.Mesh(G.head, M.skin);
-    this.headMesh.position.set(0, 1.62, 0);
+    this.headMesh.position.set(0, 1.60, 0);
     this.headMesh.castShadow = true;
     this.group.add(this.headMesh);
 
-    // Helmet (battle) or hat-brim (endurance/flood)
+    // Eyes
+    const lEye   = new THREE.Mesh(G.eyeWhite, M.eye);
+    lEye.position.set(-0.078, 1.615, 0.175);
+    const lPupil = new THREE.Mesh(G.eyePupil, M.pupil);
+    lPupil.position.set(-0.078, 1.612, 0.198);
+    const rEye   = new THREE.Mesh(G.eyeWhite, M.eye);
+    rEye.position.set( 0.078, 1.615, 0.175);
+    const rPupil = new THREE.Mesh(G.eyePupil, M.pupil);
+    rPupil.position.set( 0.078, 1.612, 0.198);
+    this.group.add(lEye, lPupil, rEye, rPupil);
+
+    // Helmet for battle agents
     if (isBattle) {
       const helm = new THREE.Mesh(G.helmet, helmetMat);
-      helm.position.set(0, 1.69, 0);
+      helm.position.set(0, 1.665, 0);
       helm.castShadow = true;
       this.group.add(helm);
     }
 
-    // --- Torso ---
+    // TORSO — tapered cylinder for better body silhouette
     this.torsoMesh = new THREE.Mesh(G.torso, bodyMat);
-    this.torsoMesh.position.set(0, 1.15, 0);
+    this.torsoMesh.position.set(0, 1.13, 0);
     this.torsoMesh.castShadow = true;
     this.group.add(this.torsoMesh);
 
-    // --- Hip ---
+    // HIP
     const hipMesh = new THREE.Mesh(G.hip, bodyMat);
     hipMesh.position.set(0, 0.84, 0);
     this.group.add(hipMesh);
 
-    // --- Left Arm pivot (attached at shoulder) ---
+    // ── LEFT ARM  (shoulder → elbow pivot → forearm + hand) ──────────────────
     this.lArmPivot = new THREE.Group();
-    this.lArmPivot.position.set(-0.3, 1.36, 0);
-    const lUpper = new THREE.Mesh(G.upperArm, bodyMat);
-    lUpper.position.y = -0.2;
-    lUpper.castShadow = true;
-    this.lArmPivot.add(lUpper);
-    const lLower = new THREE.Mesh(G.lowerArm, M.skin);
-    lLower.position.y = -0.58;
-    this.lArmPivot.add(lLower);
+    this.lArmPivot.position.set(-0.295, 1.36, 0);
+    const lUpperArm = new THREE.Mesh(G.upperArm, bodyMat);
+    lUpperArm.position.y = -0.20;
+    lUpperArm.castShadow = true;
+    this.lArmPivot.add(lUpperArm);
+
+    this.lElbowPivot = new THREE.Group();
+    this.lElbowPivot.position.y = -0.40;
+    const lForearm = new THREE.Mesh(G.lowerArm, M.skin);
+    lForearm.position.y = -0.175;
+    this.lElbowPivot.add(lForearm);
     const lHand = new THREE.Mesh(G.hand, M.skin);
-    lHand.position.y = -0.77;
-    this.lArmPivot.add(lHand);
+    lHand.position.y = -0.36;
+    this.lElbowPivot.add(lHand);
+    this.lArmPivot.add(this.lElbowPivot);
     this.group.add(this.lArmPivot);
 
-    // --- Right Arm pivot ---
+    // ── RIGHT ARM ─────────────────────────────────────────────────────────────
     this.rArmPivot = new THREE.Group();
-    this.rArmPivot.position.set(0.3, 1.36, 0);
-    const rUpper = new THREE.Mesh(G.upperArm, bodyMat);
-    rUpper.position.y = -0.2;
-    rUpper.castShadow = true;
-    this.rArmPivot.add(rUpper);
-    const rLower = new THREE.Mesh(G.lowerArm, M.skin);
-    rLower.position.y = -0.58;
-    this.rArmPivot.add(rLower);
+    this.rArmPivot.position.set(0.295, 1.36, 0);
+    const rUpperArm = new THREE.Mesh(G.upperArm, bodyMat);
+    rUpperArm.position.y = -0.20;
+    rUpperArm.castShadow = true;
+    this.rArmPivot.add(rUpperArm);
+
+    this.rElbowPivot = new THREE.Group();
+    this.rElbowPivot.position.y = -0.40;
+    const rForearm = new THREE.Mesh(G.lowerArm, M.skin);
+    rForearm.position.y = -0.175;
+    this.rElbowPivot.add(rForearm);
     const rHand = new THREE.Mesh(G.hand, M.skin);
-    rHand.position.y = -0.77;
-    this.rArmPivot.add(rHand);
+    rHand.position.y = -0.36;
+    this.rElbowPivot.add(rHand);
+    this.rArmPivot.add(this.rElbowPivot);
     this.group.add(this.rArmPivot);
 
-    // Sword in right hand for battle agents
+    // Sword for battle agents (attached to right forearm)
     if (isBattle) {
       const swordGrp = new THREE.Group();
-      swordGrp.position.set(0, -0.77, 0);
+      swordGrp.position.set(0, -0.36, 0);
       const blade = new THREE.Mesh(G.sword, M.sword);
-      blade.position.y = 0.35;
+      blade.position.y = 0.36;
       swordGrp.add(blade);
       const guard = new THREE.Mesh(G.swordGuard, M.dark);
       guard.position.y = 0.02;
       swordGrp.add(guard);
-      this.rArmPivot.add(swordGrp);
+      this.rElbowPivot.add(swordGrp);
       this.swordGrp = swordGrp;
     }
 
-    // Backpack for endurance agents
+    // Backpack for flood/endurance agents
     if (team === 'white') {
       const bp = new THREE.Mesh(G.backpack, M.dark);
-      bp.position.set(0, 1.1, -0.19);
+      bp.position.set(0, 1.10, -0.19);
       this.group.add(bp);
     }
 
-    // --- Left Leg pivot ---
+    // ── LEFT LEG  (hip pivot → thigh → knee pivot → shin + foot) ─────────────
     this.lLegPivot = new THREE.Group();
     this.lLegPivot.position.set(-0.13, 0.84, 0);
     const lThigh = new THREE.Mesh(G.upperLeg, bodyMat);
     lThigh.position.y = -0.22;
     lThigh.castShadow = true;
     this.lLegPivot.add(lThigh);
+
+    this.lKneePivot = new THREE.Group();
+    this.lKneePivot.position.y = -0.44;
     const lShin = new THREE.Mesh(G.lowerLeg, M.dark);
-    lShin.position.y = -0.62;
-    this.lLegPivot.add(lShin);
+    lShin.position.y = -0.20;
+    this.lKneePivot.add(lShin);
     const lFoot = new THREE.Mesh(G.foot, M.boot);
-    lFoot.position.set(0, -0.85, 0.06);
-    this.lLegPivot.add(lFoot);
+    lFoot.position.set(0, -0.42, 0.06);
+    this.lKneePivot.add(lFoot);
+    this.lLegPivot.add(this.lKneePivot);
     this.group.add(this.lLegPivot);
 
-    // --- Right Leg pivot ---
+    // ── RIGHT LEG ────────────────────────────────────────────────────────────
     this.rLegPivot = new THREE.Group();
     this.rLegPivot.position.set(0.13, 0.84, 0);
     const rThigh = new THREE.Mesh(G.upperLeg, bodyMat);
     rThigh.position.y = -0.22;
     rThigh.castShadow = true;
     this.rLegPivot.add(rThigh);
+
+    this.rKneePivot = new THREE.Group();
+    this.rKneePivot.position.y = -0.44;
     const rShin = new THREE.Mesh(G.lowerLeg, M.dark);
-    rShin.position.y = -0.62;
-    this.rLegPivot.add(rShin);
+    rShin.position.y = -0.20;
+    this.rKneePivot.add(rShin);
     const rFoot = new THREE.Mesh(G.foot, M.boot);
-    rFoot.position.set(0, -0.85, 0.06);
-    this.rLegPivot.add(rFoot);
+    rFoot.position.set(0, -0.42, 0.06);
+    this.rKneePivot.add(rFoot);
+    this.rLegPivot.add(this.rKneePivot);
     this.group.add(this.rLegPivot);
 
-    // Collect all part meshes for fade-out on death
-    this._parts = this.group.children.flatMap(c =>
-      c.isMesh ? [c] : c.children.filter(cc => cc.isMesh)
-    );
+    // Collect all meshes for death fade (traverse entire hierarchy)
+    this._parts = [];
+    this.group.traverse(obj => { if (obj.isMesh) this._parts.push(obj); });
 
     this.group.position.set(this.x, this.y, this.z);
     scene.add(this.group);
@@ -230,27 +259,56 @@ class Agent {
   // ── Walk-cycle animation ───────────────────────────────────────────────────
 
   _animateWalk(dt, moving, fighting) {
-    const speed = moving ? this.speed : 0;
-    this.walkPhase += speed * dt * 2.8;
+    const spd = moving ? this.speed : 0;
+    this.walkPhase += spd * dt * 2.5;
 
-    const swing = moving ? Math.sin(this.walkPhase) * 0.6 : 0;
-    const bodyBob = moving ? Math.abs(Math.sin(this.walkPhase)) * 0.04 : 0;
+    const swing    = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
+    const bodyBob  = moving ? Math.abs(Math.sin(this.walkPhase)) * 0.04 : 0;
 
-    // Arms swing opposite to legs (natural gait)
-    this.lArmPivot.rotation.x =  swing;
-    this.rArmPivot.rotation.x = -swing;
-    this.lLegPivot.rotation.x = -swing;
-    this.rLegPivot.rotation.x =  swing;
+    // Legs: swing at hip + knee bend for foot clearance during forward swing
+    this.lLegPivot.rotation.x  = -swing;
+    this.lKneePivot.rotation.x =  Math.max(0,  swing) * 0.55;
+    this.rLegPivot.rotation.x  =  swing;
+    this.rKneePivot.rotation.x =  Math.max(0, -swing) * 0.55;
+
+    // Arms: swing opposite to legs + slight elbow bend
+    if (fighting && this.swordGrp) {
+      this.rArmPivot.rotation.x   = -1.0 + Math.sin(this.walkPhase * 3) * 0.35;
+      this.rArmPivot.rotation.z   = -0.30;
+      this.rElbowPivot.rotation.x =  0.55 + Math.sin(this.walkPhase * 3) * 0.18;
+      this.lArmPivot.rotation.x   =  swing * 0.50;
+      this.lElbowPivot.rotation.x =  Math.max(0,  swing * 0.5) * 0.25;
+    } else {
+      this.lArmPivot.rotation.x   =  swing;
+      this.lElbowPivot.rotation.x =  Math.max(0,  swing) * 0.28;
+      this.rArmPivot.rotation.x   = -swing;
+      this.rArmPivot.rotation.z   =  0;
+      this.rElbowPivot.rotation.x =  Math.max(0, -swing) * 0.28;
+    }
 
     this.group.position.y = this.y + bodyBob;
+  }
 
-    // Fighting: raise sword arm
-    if (fighting && this.swordGrp) {
-      this.rArmPivot.rotation.x = -1.1 + Math.sin(this.walkPhase * 3) * 0.4;
-      this.rArmPivot.rotation.z = -0.3;
-    } else if (this.rArmPivot) {
-      this.rArmPivot.rotation.z = 0;
-    }
+  // ── Terrain slope alignment ────────────────────────────────────────────────
+
+  _alignToSlope() {
+    const e  = 1.0;
+    const fy = this.group.rotation.y;
+    const sx = Math.sin(fy), cz = Math.cos(fy);
+
+    const hFwd = sampleHeightWorld(this.x + sx * e, this.z + cz * e);
+    const hBwd = sampleHeightWorld(this.x - sx * e, this.z - cz * e);
+    const hR   = sampleHeightWorld(this.x + cz * e, this.z - sx * e);
+    const hL   = sampleHeightWorld(this.x - cz * e, this.z + sx * e);
+
+    const targetPitch = Math.atan2(hFwd - hBwd, 2 * e) * 0.60;
+    const targetRoll  = Math.atan2(hL   - hR,   2 * e) * 0.55;
+
+    this._pitch += (targetPitch - this._pitch) * 0.12;
+    this._roll  += (targetRoll  - this._roll)  * 0.12;
+
+    this.group.rotation.x = this._pitch;
+    this.group.rotation.z = this._roll;
   }
 
   // ── Per-tick update ────────────────────────────────────────────────────────
@@ -265,29 +323,32 @@ class Agent {
     let fighting = false;
 
     switch (this.state) {
-      case STATE.FLEE:   this._updateFlee(dt, hints);  moving = true; break;
+      case STATE.FLEE:   this._updateFlee(dt, hints);  moving   = true; break;
       case STATE.FIGHT:  this._updateFight(dt, hints); fighting = true; break;
       case STATE.TIRED:  this._updateTired(dt); break;
-      case STATE.WANDER: this._updateWander(dt, hints); moving = true; break;
+      case STATE.WANDER: this._updateWander(dt, hints); moving  = true; break;
     }
 
-    // Clamp agent to terrain surface
-    const groundY = sampleHeightWorld(this.x, this.z) + 1.55;
+    // Keep feet on terrain surface
+    const groundY = sampleHeightWorld(this.x, this.z);
     if (this.y < groundY) this.y = groundY;
 
-    // Sync position to mesh + physics
-    this.group.position.set(this.x, this.y, this.z);
-    if (this.rigidBody) {
-      this.rigidBody.setNextKinematicTranslation({ x: this.x, y: this.y, z: this.z });
-    }
-
-    // Face movement direction
+    // Facing direction, then slope tilt (YXZ order handles these independently)
     const spd = Math.sqrt(this.vx * this.vx + this.vz * this.vz);
     if (spd > 0.05) {
       this.group.rotation.y = Math.atan2(this.vx, this.vz);
     }
 
+    this._alignToSlope();
     this._animateWalk(dt, moving || (fighting && spd > 0.05), fighting);
+
+    // position.y is set by _animateWalk; set x/z here
+    this.group.position.x = this.x;
+    this.group.position.z = this.z;
+
+    if (this.rigidBody) {
+      this.rigidBody.setNextKinematicTranslation({ x: this.x, y: this.y + 0.9, z: this.z });
+    }
   }
 
   // ── State handlers ─────────────────────────────────────────────────────────
@@ -300,9 +361,9 @@ class Agent {
       let bestH = -Infinity, bestDx = 0, bestDz = 0;
       for (let i = 0; i < 8; i++) {
         const ang = (i / 8) * Math.PI * 2 + this.wanderAngle * 0.12;
-        const tx = this.x + Math.cos(ang) * 7;
-        const tz = this.z + Math.sin(ang) * 7;
-        const h = sampleHeightWorld(tx, tz);
+        const tx  = this.x + Math.cos(ang) * 7;
+        const tz  = this.z + Math.sin(ang) * 7;
+        const h   = sampleHeightWorld(tx, tz);
         if (h > bestH) { bestH = h; bestDx = Math.cos(ang); bestDz = Math.sin(ang); }
       }
       this.vx = bestDx * this.speed;
@@ -325,8 +386,8 @@ class Agent {
 
     if (!this.target) { this.vx = 0; this.vz = 0; return; }
 
-    const dx = this.target.x - this.x;
-    const dz = this.target.z - this.z;
+    const dx   = this.target.x - this.x;
+    const dz   = this.target.z - this.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
 
     if (dist > attackRange) {
@@ -338,8 +399,8 @@ class Agent {
     } else {
       this.vx = 0; this.vz = 0;
       if (this.attackTimer <= 0) {
-        this.target.hp -= 1;
-        this.attackTimer = 1 / 10;
+        this.target.hp     -= 1;
+        this.attackTimer    = 1 / 10;
         playHit();
         if (this.target.hp <= 0) {
           this.target.die();
@@ -393,7 +454,7 @@ class Agent {
     this.wanderTimer -= dt;
     if (this.wanderTimer <= 0) {
       this.wanderAngle += (Math.random() - 0.5) * Math.PI * 0.9;
-      this.wanderTimer = 1.2 + Math.random() * 2;
+      this.wanderTimer  = 1.2 + Math.random() * 2;
     }
     this.vx = Math.cos(this.wanderAngle) * spd;
     this.vz = Math.sin(this.wanderAngle) * spd;
