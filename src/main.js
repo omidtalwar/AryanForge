@@ -12,6 +12,7 @@ import { initControlPanel, readLocation } from './ui/controlPanel.js';
 import { updateStats, hideSummary } from './ui/stats.js';
 import { toggleTimeScale, isTimelapse } from './utils/timeScale.js';
 import { resumeAudio } from './utils/sound.js';
+import { updateEffects, clearEffects } from './utils/effects.js';
 
 let sceneCtx       = null;
 let activeScenario = null;
@@ -50,7 +51,7 @@ async function bootstrap() {
 
   // ── Main loop ─────────────────────────────────────────────────────────────
   startLoop(
-    (dt, simTime) => { if (activeScenario) activeScenario.update(dt, simTime); },
+    (dt, simTime) => { if (activeScenario) activeScenario.update(dt, simTime); updateEffects(dt); },
     () => {
       controls.update();
       const counts = activeScenario?.getCounts() ?? { alive: 0, dead: 0 };
@@ -78,6 +79,7 @@ function handleReset() {
     activeScenario = null;
     activeKey      = null;
   }
+  clearEffects(sceneCtx.scene);
   hideSummary();
 }
 

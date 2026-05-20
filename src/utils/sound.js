@@ -90,6 +90,43 @@ export function playHit() {
   osc2.start(t); osc2.stop(t + 0.14);
 }
 
+/** Gunshot — sharp crack + low boom. Rate-limited. */
+let lastGunshotAt = 0;
+export function playGunshot() {
+  const now = performance.now();
+  if (now - lastGunshotAt < 45) return;
+  lastGunshotAt = now;
+  const c = getCtx();
+  const t = c.currentTime;
+
+  // Low boom
+  const boom    = c.createOscillator();
+  const boomEnv = c.createGain();
+  boom.type = 'sine';
+  boom.frequency.setValueAtTime(220, t);
+  boom.frequency.exponentialRampToValueAtTime(35, t + 0.10);
+  boomEnv.gain.setValueAtTime(0.55, t);
+  boomEnv.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  boom.connect(boomEnv); boomEnv.connect(masterGain);
+  boom.start(t); boom.stop(t + 0.18);
+
+  // High crack (noise burst)
+  const bufLen  = Math.floor(c.sampleRate * 0.07);
+  const buf     = c.createBuffer(1, bufLen, c.sampleRate);
+  const d       = buf.getChannelData(0);
+  for (let i = 0; i < bufLen; i++) d[i] = (Math.random() * 2 - 1);
+  const noise   = c.createBufferSource();
+  noise.buffer  = buf;
+  const hp      = c.createBiquadFilter();
+  hp.type       = 'highpass';
+  hp.frequency.value = 2400;
+  const noiseEnv = c.createGain();
+  noiseEnv.gain.setValueAtTime(0.9, t);
+  noiseEnv.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+  noise.connect(hp); hp.connect(noiseEnv); noiseEnv.connect(masterGain);
+  noise.start(t);
+}
+
 /** Splash sound when an agent drowns. */
 export function playSplash() {
   const c = getCtx();

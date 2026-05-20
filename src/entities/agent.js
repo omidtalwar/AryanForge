@@ -1,14 +1,15 @@
 /**
- * agent.js — Humanoid agent: articulated mesh with knee/elbow joints,
- * PBR materials, terrain slope alignment, and state machine.
+ * agent.js — Humanoid agent: articulated mesh with knee/elbow joints, PBR materials,
+ * terrain slope alignment, mixed weapons (gun / sword / knife), and visual effects.
  */
 
 import * as THREE from 'three';
 import { createAgentBody, removeBody } from '../engine/physics.js';
 import { sampleHeightWorld } from './terrain.js';
-import { playDeath, playHit, playSplash } from '../utils/sound.js';
+import { playDeath, playHit, playSplash, playGunshot } from '../utils/sound.js';
+import { spawnDeathEffect, spawnMuzzleFlash, spawnBulletTracer } from '../utils/effects.js';
 
-// ── Shared geometries (created once) ──────────────────────────────────────────
+// ── Shared geometries ─────────────────────────────────────────────────────────
 const G = {
   head:       new THREE.SphereGeometry(0.21, 14, 10),
   eyeWhite:   new THREE.SphereGeometry(0.046, 7, 6),
@@ -22,25 +23,36 @@ const G = {
   upperLeg:   new THREE.CylinderGeometry(0.100, 0.088, 0.44, 8),
   lowerLeg:   new THREE.CylinderGeometry(0.082, 0.076, 0.40, 7),
   foot:       new THREE.BoxGeometry(0.13, 0.10, 0.26),
+  // Sword
   sword:      new THREE.BoxGeometry(0.055, 0.72, 0.040),
   swordGuard: new THREE.BoxGeometry(0.28,  0.055, 0.055),
-  backpack:   new THREE.BoxGeometry(0.22,  0.28,  0.12),
+  // Knife
+  knife:      new THREE.BoxGeometry(0.032, 0.26, 0.018),
+  knifeGuard: new THREE.BoxGeometry(0.11,  0.040, 0.032),
+  // Gun
+  gunBody:    new THREE.BoxGeometry(0.068, 0.60, 0.068),
+  gunStock:   new THREE.BoxGeometry(0.055, 0.22, 0.055),
+  gunBarrelG: new THREE.CylinderGeometry(0.018, 0.018, 0.28, 6),
+  // Backpack
+  backpack:   new THREE.BoxGeometry(0.22, 0.28, 0.12),
 };
 
-// ── PBR materials ──────────────────────────────────────────────────────────────
+// ── PBR materials ─────────────────────────────────────────────────────────────
 const M = {
-  skin:   new THREE.MeshStandardMaterial({ color: 0xf5c9a0, roughness: 0.82, metalness: 0.00 }),
-  dark:   new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.88, metalness: 0.12 }),
-  boot:   new THREE.MeshStandardMaterial({ color: 0x3a2810, roughness: 0.95, metalness: 0.00 }),
-  sword:  new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.25, metalness: 0.85 }),
-  eye:    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.50, metalness: 0.00 }),
-  pupil:  new THREE.MeshStandardMaterial({ color: 0x1a1a2a, roughness: 0.50, metalness: 0.00 }),
-  red:    new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.70, metalness: 0.05 }),
-  redH:   new THREE.MeshStandardMaterial({ color: 0x881111, roughness: 0.55, metalness: 0.25 }),
-  blue:   new THREE.MeshStandardMaterial({ color: 0x2255cc, roughness: 0.70, metalness: 0.05 }),
-  blueH:  new THREE.MeshStandardMaterial({ color: 0x113399, roughness: 0.55, metalness: 0.25 }),
-  white:  new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.78, metalness: 0.04 }),
-  whiteH: new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.65, metalness: 0.15 }),
+  skin:     new THREE.MeshStandardMaterial({ color: 0xf5c9a0, roughness: 0.82, metalness: 0.00 }),
+  dark:     new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.88, metalness: 0.12 }),
+  boot:     new THREE.MeshStandardMaterial({ color: 0x3a2810, roughness: 0.95, metalness: 0.00 }),
+  sword:    new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.25, metalness: 0.85 }),
+  eye:      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.50, metalness: 0.00 }),
+  pupil:    new THREE.MeshStandardMaterial({ color: 0x1a1a2a, roughness: 0.50, metalness: 0.00 }),
+  red:      new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.70, metalness: 0.05 }),
+  redH:     new THREE.MeshStandardMaterial({ color: 0x881111, roughness: 0.55, metalness: 0.25 }),
+  blue:     new THREE.MeshStandardMaterial({ color: 0x2255cc, roughness: 0.70, metalness: 0.05 }),
+  blueH:    new THREE.MeshStandardMaterial({ color: 0x113399, roughness: 0.55, metalness: 0.25 }),
+  white:    new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.78, metalness: 0.04 }),
+  whiteH:   new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.65, metalness: 0.15 }),
+  gunMetal: new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.30, metalness: 0.90 }),
+  gunWood:  new THREE.MeshStandardMaterial({ color: 0x5c3a1e, roughness: 0.92, metalness: 0.00 }),
 };
 
 const TEAM_MATS = {
@@ -61,8 +73,8 @@ export const STATE = {
 
 export const agents = [];
 
-export function createAgent(scene, x, z, team = 'white', speed = 5) {
-  const a = new Agent(scene, x, z, team, speed);
+export function createAgent(scene, x, z, team = 'white', speed = 5, weaponType = 'none') {
+  const a = new Agent(scene, x, z, team, speed, weaponType);
   agents.push(a);
   return a;
 }
@@ -75,16 +87,18 @@ export function clearAgents(scene) {
 // ── Agent class ───────────────────────────────────────────────────────────────
 
 class Agent {
-  constructor(scene, x, z, team, speed) {
-    this.team    = team;
-    this.speed   = speed;
-    this.hp      = 100;
-    this.stamina = 100;
-    this.state   = STATE.IDLE;
-    this.alive   = true;
+  constructor(scene, x, z, team, speed, weaponType) {
+    this.team       = team;
+    this.speed      = speed;
+    this.hp         = 100;
+    this.stamina    = 100;
+    this.state      = STATE.IDLE;
+    this.alive      = true;
+    this.weaponType = weaponType;  // 'gun' | 'sword' | 'knife' | 'none'
+    this._scene     = scene;
 
     this.x = x;
-    this.y = sampleHeightWorld(x, z);   // group.position.y = feet on ground
+    this.y = sampleHeightWorld(x, z);
     this.z = z;
 
     this.vx = 0;
@@ -95,10 +109,11 @@ class Agent {
     this.wanderTimer    = 0;
     this.attackTimer    = 0;
     this.target         = null;
+    this._recoilTimer   = 0;
 
     this.walkPhase = Math.random() * Math.PI * 2;
-    this._pitch    = 0;   // forward tilt from slope
-    this._roll     = 0;   // lateral tilt from slope
+    this._pitch    = 0;
+    this._roll     = 0;
 
     this._buildMesh(scene, team);
 
@@ -113,7 +128,7 @@ class Agent {
     const isBattle = (team === 'red' || team === 'blue');
 
     this.group = new THREE.Group();
-    this.group.rotation.order = 'YXZ';   // facing first, then slope tilt
+    this.group.rotation.order = 'YXZ';
 
     // HEAD
     this.headMesh = new THREE.Mesh(G.head, M.skin);
@@ -132,7 +147,7 @@ class Agent {
     rPupil.position.set( 0.078, 1.612, 0.198);
     this.group.add(lEye, lPupil, rEye, rPupil);
 
-    // Helmet for battle agents
+    // Helmet (battle agents only)
     if (isBattle) {
       const helm = new THREE.Mesh(G.helmet, helmetMat);
       helm.position.set(0, 1.665, 0);
@@ -140,7 +155,7 @@ class Agent {
       this.group.add(helm);
     }
 
-    // TORSO — tapered cylinder for better body silhouette
+    // TORSO
     this.torsoMesh = new THREE.Mesh(G.torso, bodyMat);
     this.torsoMesh.position.set(0, 1.13, 0);
     this.torsoMesh.castShadow = true;
@@ -151,14 +166,13 @@ class Agent {
     hipMesh.position.set(0, 0.84, 0);
     this.group.add(hipMesh);
 
-    // ── LEFT ARM  (shoulder → elbow pivot → forearm + hand) ──────────────────
+    // ── LEFT ARM ──────────────────────────────────────────────────────────────
     this.lArmPivot = new THREE.Group();
     this.lArmPivot.position.set(-0.295, 1.36, 0);
     const lUpperArm = new THREE.Mesh(G.upperArm, bodyMat);
     lUpperArm.position.y = -0.20;
     lUpperArm.castShadow = true;
     this.lArmPivot.add(lUpperArm);
-
     this.lElbowPivot = new THREE.Group();
     this.lElbowPivot.position.y = -0.40;
     const lForearm = new THREE.Mesh(G.lowerArm, M.skin);
@@ -177,7 +191,6 @@ class Agent {
     rUpperArm.position.y = -0.20;
     rUpperArm.castShadow = true;
     this.rArmPivot.add(rUpperArm);
-
     this.rElbowPivot = new THREE.Group();
     this.rElbowPivot.position.y = -0.40;
     const rForearm = new THREE.Mesh(G.lowerArm, M.skin);
@@ -189,18 +202,58 @@ class Agent {
     this.rArmPivot.add(this.rElbowPivot);
     this.group.add(this.rArmPivot);
 
-    // Sword for battle agents (attached to right forearm)
-    if (isBattle) {
-      const swordGrp = new THREE.Group();
-      swordGrp.position.set(0, -0.36, 0);
+    // ── WEAPON ────────────────────────────────────────────────────────────────
+    if (this.weaponType === 'sword') {
+      const grp   = new THREE.Group();
+      grp.position.set(0, -0.36, 0);
       const blade = new THREE.Mesh(G.sword, M.sword);
       blade.position.y = 0.36;
-      swordGrp.add(blade);
+      grp.add(blade);
       const guard = new THREE.Mesh(G.swordGuard, M.dark);
       guard.position.y = 0.02;
-      swordGrp.add(guard);
-      this.rElbowPivot.add(swordGrp);
-      this.swordGrp = swordGrp;
+      grp.add(guard);
+      this.rElbowPivot.add(grp);
+      this.swordGrp = grp;
+
+    } else if (this.weaponType === 'knife') {
+      const grp   = new THREE.Group();
+      grp.position.set(0, -0.36, 0);
+      const blade = new THREE.Mesh(G.knife, M.sword);
+      blade.position.y = 0.15;
+      grp.add(blade);
+      const guard = new THREE.Mesh(G.knifeGuard, M.dark);
+      guard.position.y = 0.02;
+      grp.add(guard);
+      this.rElbowPivot.add(grp);
+      this.knifeGrp = grp;
+
+    } else if (this.weaponType === 'gun') {
+      // Rifle held in right hand; barrel along -Y of elbow pivot
+      // (becomes roughly +Z when arm raises forward for aiming)
+      this.gunGrp = new THREE.Group();
+      this.gunGrp.position.set(0.02, -0.36, 0.03);
+
+      const receiver = new THREE.Mesh(G.gunBody, M.gunMetal);
+      receiver.position.y = -0.18;
+      receiver.castShadow = true;
+      this.gunGrp.add(receiver);
+
+      const stock = new THREE.Mesh(G.gunStock, M.gunWood);
+      stock.position.set(0, 0.10, -0.02);
+      stock.rotation.x = 0.25;
+      this.gunGrp.add(stock);
+
+      // Barrel extension (thin cylinder)
+      const barrel = new THREE.Mesh(G.gunBarrelG, M.gunMetal);
+      barrel.position.y = -0.43;
+      this.gunGrp.add(barrel);
+
+      // Invisible reference point at barrel tip for muzzle flash
+      this.gunBarrelTip = new THREE.Object3D();
+      this.gunBarrelTip.position.y = -0.58;
+      this.gunGrp.add(this.gunBarrelTip);
+
+      this.rElbowPivot.add(this.gunGrp);
     }
 
     // Backpack for flood/endurance agents
@@ -210,14 +263,13 @@ class Agent {
       this.group.add(bp);
     }
 
-    // ── LEFT LEG  (hip pivot → thigh → knee pivot → shin + foot) ─────────────
+    // ── LEFT LEG ──────────────────────────────────────────────────────────────
     this.lLegPivot = new THREE.Group();
     this.lLegPivot.position.set(-0.13, 0.84, 0);
     const lThigh = new THREE.Mesh(G.upperLeg, bodyMat);
     lThigh.position.y = -0.22;
     lThigh.castShadow = true;
     this.lLegPivot.add(lThigh);
-
     this.lKneePivot = new THREE.Group();
     this.lKneePivot.position.y = -0.44;
     const lShin = new THREE.Mesh(G.lowerLeg, M.dark);
@@ -229,14 +281,13 @@ class Agent {
     this.lLegPivot.add(this.lKneePivot);
     this.group.add(this.lLegPivot);
 
-    // ── RIGHT LEG ────────────────────────────────────────────────────────────
+    // ── RIGHT LEG ─────────────────────────────────────────────────────────────
     this.rLegPivot = new THREE.Group();
     this.rLegPivot.position.set(0.13, 0.84, 0);
     const rThigh = new THREE.Mesh(G.upperLeg, bodyMat);
     rThigh.position.y = -0.22;
     rThigh.castShadow = true;
     this.rLegPivot.add(rThigh);
-
     this.rKneePivot = new THREE.Group();
     this.rKneePivot.position.y = -0.44;
     const rShin = new THREE.Mesh(G.lowerLeg, M.dark);
@@ -248,7 +299,7 @@ class Agent {
     this.rLegPivot.add(this.rKneePivot);
     this.group.add(this.rLegPivot);
 
-    // Collect all meshes for death fade (traverse entire hierarchy)
+    // Collect all meshes for death fade
     this._parts = [];
     this.group.traverse(obj => { if (obj.isMesh) this._parts.push(obj); });
 
@@ -256,35 +307,57 @@ class Agent {
     scene.add(this.group);
   }
 
-  // ── Walk-cycle animation ───────────────────────────────────────────────────
+  // ── Walk-cycle + combat animation ─────────────────────────────────────────
 
   _animateWalk(dt, moving, fighting) {
     const spd = moving ? this.speed : 0;
     this.walkPhase += spd * dt * 2.5;
 
-    const swing    = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
-    const bodyBob  = moving ? Math.abs(Math.sin(this.walkPhase)) * 0.04 : 0;
+    const swing   = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
+    const bodyBob = moving ? Math.abs(Math.sin(this.walkPhase)) * 0.04 : 0;
 
-    // Legs: swing at hip + knee bend for foot clearance during forward swing
+    // Legs with knee bend
     this.lLegPivot.rotation.x  = -swing;
     this.lKneePivot.rotation.x =  Math.max(0,  swing) * 0.55;
     this.rLegPivot.rotation.x  =  swing;
     this.rKneePivot.rotation.x =  Math.max(0, -swing) * 0.55;
 
-    // Arms: swing opposite to legs + slight elbow bend
-    if (fighting && this.swordGrp) {
-      this.rArmPivot.rotation.x   = -1.0 + Math.sin(this.walkPhase * 3) * 0.35;
+    // Arms — weapon-specific poses
+    if (this.weaponType === 'gun' && fighting && this.target?.alive) {
+      // Aim rifle forward
+      const recoilKick = this._recoilTimer > 0 ? this._recoilTimer * 3.5 : 0;
+      this.rArmPivot.rotation.x   = -0.82 + recoilKick;
+      this.rArmPivot.rotation.z   = -0.12;
+      this.rElbowPivot.rotation.x =  0.36;
+      this.lArmPivot.rotation.x   = -0.52;   // support hand under barrel
+      this.lElbowPivot.rotation.x =  0.62;
+
+    } else if (this.weaponType === 'gun') {
+      // Carry at side while moving
+      this.rArmPivot.rotation.x   = -swing * 0.28;
+      this.rArmPivot.rotation.z   = -0.10;
+      this.rElbowPivot.rotation.x =  0.18;
+      this.lArmPivot.rotation.x   =  swing * 0.28;
+      this.lElbowPivot.rotation.x =  Math.max(0, swing * 0.28) * 0.20;
+
+    } else if ((this.weaponType === 'sword' || this.weaponType === 'knife') && fighting) {
+      const mult = this.weaponType === 'knife' ? 1.45 : 1.0;
+      this.rArmPivot.rotation.x   = -1.0 + Math.sin(this.walkPhase * 3) * 0.35 * mult;
       this.rArmPivot.rotation.z   = -0.30;
-      this.rElbowPivot.rotation.x =  0.55 + Math.sin(this.walkPhase * 3) * 0.18;
+      this.rElbowPivot.rotation.x =  0.55 + Math.sin(this.walkPhase * 3) * 0.18 * mult;
       this.lArmPivot.rotation.x   =  swing * 0.50;
-      this.lElbowPivot.rotation.x =  Math.max(0,  swing * 0.5) * 0.25;
+      this.lElbowPivot.rotation.x =  Math.max(0, swing * 0.5) * 0.25;
+
     } else {
+      // Natural walking swing
       this.lArmPivot.rotation.x   =  swing;
       this.lElbowPivot.rotation.x =  Math.max(0,  swing) * 0.28;
       this.rArmPivot.rotation.x   = -swing;
       this.rArmPivot.rotation.z   =  0;
       this.rElbowPivot.rotation.x =  Math.max(0, -swing) * 0.28;
     }
+
+    if (this._recoilTimer > 0) this._recoilTimer -= dt;
 
     this.group.position.y = this.y + bodyBob;
   }
@@ -314,10 +387,7 @@ class Agent {
   // ── Per-tick update ────────────────────────────────────────────────────────
 
   update(dt, hints = {}) {
-    if (!this.alive) {
-      this._updateDead(dt);
-      return;
-    }
+    if (!this.alive) { this._updateDead(dt); return; }
 
     let moving   = false;
     let fighting = false;
@@ -329,20 +399,15 @@ class Agent {
       case STATE.WANDER: this._updateWander(dt, hints); moving  = true; break;
     }
 
-    // Keep feet on terrain surface
     const groundY = sampleHeightWorld(this.x, this.z);
     if (this.y < groundY) this.y = groundY;
 
-    // Facing direction, then slope tilt (YXZ order handles these independently)
     const spd = Math.sqrt(this.vx * this.vx + this.vz * this.vz);
-    if (spd > 0.05) {
-      this.group.rotation.y = Math.atan2(this.vx, this.vz);
-    }
+    if (spd > 0.05) this.group.rotation.y = Math.atan2(this.vx, this.vz);
 
     this._alignToSlope();
     this._animateWalk(dt, moving || (fighting && spd > 0.05), fighting);
 
-    // position.y is set by _animateWalk; set x/z here
     this.group.position.x = this.x;
     this.group.position.z = this.z;
 
@@ -383,31 +448,90 @@ class Agent {
     if (!this.target || !this.target.alive) {
       this.target = this._nearestEnemy(allAgents);
     }
-
     if (!this.target) { this.vx = 0; this.vz = 0; return; }
 
     const dx   = this.target.x - this.x;
     const dz   = this.target.z - this.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
 
-    if (dist > attackRange) {
-      this.vx = (dx / dist) * this.speed;
-      this.vz = (dz / dist) * this.speed;
-      this.x += this.vx * dt;
-      this.z += this.vz * dt;
-      this._clamp();
+    if (this.weaponType === 'gun') {
+      const idealDist = 10;
+      const maxRange  = 20;
+
+      if (dist > maxRange) {
+        // Close in
+        this.vx = (dx / dist) * this.speed;
+        this.vz = (dz / dist) * this.speed;
+        this.x += this.vx * dt;
+        this.z += this.vz * dt;
+        this._clamp();
+      } else {
+        // Strafe to maintain ideal standoff distance
+        if (dist < idealDist - 2.5) {
+          this.vx = -(dx / dist) * this.speed * 0.55;
+          this.vz = -(dz / dist) * this.speed * 0.55;
+          this.x += this.vx * dt;
+          this.z += this.vz * dt;
+          this._clamp();
+        } else if (dist > idealDist + 3.5) {
+          this.vx = (dx / dist) * this.speed * 0.6;
+          this.vz = (dz / dist) * this.speed * 0.6;
+          this.x += this.vx * dt;
+          this.z += this.vz * dt;
+          this._clamp();
+        } else {
+          this.vx = 0; this.vz = 0;
+        }
+        if (this.attackTimer <= 0) this._fireAtTarget();
+      }
     } else {
-      this.vx = 0; this.vz = 0;
-      if (this.attackTimer <= 0) {
-        this.target.hp     -= 1;
-        this.attackTimer    = 1 / 10;
-        playHit();
-        if (this.target.hp <= 0) {
-          this.target.die();
-          this.target = null;
+      // Melee — knife slightly shorter range, faster
+      const meleeRange = this.weaponType === 'knife' ? attackRange * 0.75 : attackRange;
+
+      if (dist > meleeRange) {
+        this.vx = (dx / dist) * this.speed;
+        this.vz = (dz / dist) * this.speed;
+        this.x += this.vx * dt;
+        this.z += this.vz * dt;
+        this._clamp();
+      } else {
+        this.vx = 0; this.vz = 0;
+        if (this.attackTimer <= 0) {
+          const dmg  = this.weaponType === 'knife' ? 2 : 1;
+          const rate = this.weaponType === 'knife' ? 1 / 14 : 1 / 10;
+          this.target.hp -= dmg;
+          this.attackTimer = rate;
+          playHit();
+          if (this.target.hp <= 0) { this.target.die(); this.target = null; }
         }
       }
     }
+  }
+
+  _fireAtTarget() {
+    if (!this.target?.alive) return;
+    this.attackTimer  = 0.45;
+    this._recoilTimer = 0.14;
+
+    playGunshot();
+
+    // World position of barrel tip
+    const muzzle = new THREE.Vector3();
+    if (this.gunBarrelTip) {
+      this.gunBarrelTip.getWorldPosition(muzzle);
+    } else {
+      muzzle.set(this.x, this.y + 1.3, this.z);
+    }
+
+    spawnMuzzleFlash(this._scene, muzzle.x, muzzle.y, muzzle.z);
+    spawnBulletTracer(
+      this._scene,
+      muzzle.x, muzzle.y, muzzle.z,
+      this.target.x, this.target.y + 0.9, this.target.z,
+    );
+
+    this.target.hp -= 20;
+    if (this.target.hp <= 0) { this.target.die(); this.target = null; }
   }
 
   _updateTired(dt) {
@@ -484,6 +608,8 @@ class Agent {
 
     if (this.underWaterTime > 0) playSplash();
     else playDeath();
+
+    spawnDeathEffect(this._scene, this.x, this.y + 0.9, this.z);
 
     if (this.rigidBody) { removeBody(this.rigidBody); this.rigidBody = null; }
   }
