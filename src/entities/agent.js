@@ -8,7 +8,6 @@ import { sampleHeightWorld } from './terrain.js';
 import { playDeath, playHit, playSplash, playGunshot } from '../utils/sound.js';
 import { spawnDeathEffect, spawnMuzzleFlash, spawnBulletTracer } from '../utils/effects.js';
 import { registerAgent } from './agentRenderer.js';
-import { createAgentBody, removeBody } from '../engine/physics.js';
 import { SpatialGrid } from '../utils/spatialGrid.js';
 
 export const STATE = {
@@ -37,9 +36,6 @@ export function createAgent(scene, x, z, team = 'white', speed = 5, weaponType =
 }
 
 export function clearAgents(scene) {
-  for (const a of agents) {
-    if (a.rigidBody) { removeBody(a.rigidBody); a.rigidBody = null; }
-  }
   agents.length = 0;
 }
 
@@ -87,10 +83,6 @@ class Agent {
     // ── Death animation values ───────────────────────────────────────────────
     this._deathRoll  = 0;
     this._deathSinkY = 0;
-
-    // Physics body
-    const { rigidBody } = createAgentBody(x, this.y + 0.9, z);
-    this.rigidBody = rigidBody;
   }
 
   // ── Per-tick update ────────────────────────────────────────────────────────
@@ -120,9 +112,6 @@ class Agent {
     // Animate bones
     this._animateWalk(dt, moving || (fighting && spd > 0.05), fighting);
 
-    if (this.rigidBody) {
-      this.rigidBody.setNextKinematicTranslation({ x: this.x, y: this.y + 0.9, z: this.z });
-    }
   }
 
   // ── State handlers ─────────────────────────────────────────────────────────
@@ -328,7 +317,6 @@ class Agent {
     this.vx = 0; this.vz = 0;
     if (this.underWaterTime > 0) playSplash(); else playDeath();
     spawnDeathEffect(this._scene, this.x, this.y + 0.9, this.z);
-    if (this.rigidBody) { removeBody(this.rigidBody); this.rigidBody = null; }
   }
 
   isDoneDecaying() {

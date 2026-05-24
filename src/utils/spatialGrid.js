@@ -1,7 +1,9 @@
 /**
  * spatialGrid.js — Spatial hash grid for O(1) nearest-neighbour queries.
- * Converts O(n²) "find nearest enemy" to O(1) per agent.
+ * Integer keys avoid per-query string allocation (faster than template-literal keys).
  */
+
+const _OFFSET = 500; // cells offset so negative coords stay positive
 
 export class SpatialGrid {
   constructor(cellSize = 12) {
@@ -18,7 +20,6 @@ export class SpatialGrid {
     c.push(agent);
   }
 
-  /** Return all agents within radius around (x, z). */
   query(x, z, radius) {
     const r   = Math.ceil(radius / this.cellSize);
     const cx  = Math.floor(x / this.cellSize);
@@ -26,7 +27,7 @@ export class SpatialGrid {
     const out = [];
     for (let dx = -r; dx <= r; dx++) {
       for (let dz = -r; dz <= r; dz++) {
-        const cell = this._cells.get(`${cx + dx},${cz + dz}`);
+        const cell = this._cells.get((cx + dx + _OFFSET) * 1000 + (cz + dz + _OFFSET));
         if (cell) for (const a of cell) out.push(a);
       }
     }
@@ -34,6 +35,7 @@ export class SpatialGrid {
   }
 
   _key(x, z) {
-    return `${Math.floor(x / this.cellSize)},${Math.floor(z / this.cellSize)}`;
+    return (Math.floor(x / this.cellSize) + _OFFSET) * 1000 +
+           (Math.floor(z / this.cellSize) + _OFFSET);
   }
 }
