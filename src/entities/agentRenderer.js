@@ -153,15 +153,11 @@ export function registerAgent(agent) {
 // ── Per-frame update ───────────────────────────────────────────────────────────
 
 export function updateRenderer(agentsList) {
-  const n = agentsList.length;
-
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < agentsList.length; i++) {
     const a = agentsList[i];
+    const s = a.idx; // registered slot — must match color slot set in registerAgent
 
-    if (a.isDoneDecaying()) {
-      // Slot is inactive — keep hidden (was set to _HIDDEN in die() → no work needed)
-      continue;
-    }
+    if (a.isDoneDecaying()) continue;
 
     // ── Root matrix ──────────────────────────────────────────────────────────
     const deathRoll  = a.alive ? a._roll        : a._deathRoll;
@@ -174,52 +170,52 @@ export function updateRenderer(agentsList) {
     _root.compose(_rv, _quat, _SCALE1);
 
     // ── Head ─────────────────────────────────────────────────────────────────
-    _set(_im.head, i, _root, 0, 1.60, 0);
+    _set(_im.head, s, _root, 0, 1.60, 0);
 
     // ── Torso + hip ───────────────────────────────────────────────────────────
-    _set(_im.torso, i, _root, 0, 1.13, 0);
-    _set(_im.hip,   i, _root, 0, 0.84, 0);
+    _set(_im.torso, s, _root, 0, 1.13, 0);
+    _set(_im.hip,   s, _root, 0, 0.84, 0);
 
     // ── Helmet (battle agents only) ───────────────────────────────────────────
-    if (a.team !== 'white') _set(_im.helmet, i, _root, 0, 1.665, 0);
-    else                    _im.helmet.setMatrixAt(i, _HIDDEN);
+    if (a.team !== 'white') _set(_im.helmet, s, _root, 0, 1.665, 0);
+    else                    _im.helmet.setMatrixAt(s, _HIDDEN);
 
     // ── Left arm ─────────────────────────────────────────────────────────────
     _mrx(_root, -0.295, 1.36, 0, a.lArmSwing, _al);
-    _set(_im.luArm, i, _al, 0, -0.20, 0);
+    _set(_im.luArm, s, _al, 0, -0.20, 0);
     _mrx(_al, 0, -0.40, 0, a.lElbowBend, _el);
-    _set(_im.lfArm, i, _el, 0, -0.175, 0);
-    _set(_im.lHand, i, _el, 0, -0.36,  0);
+    _set(_im.lfArm, s, _el, 0, -0.175, 0);
+    _set(_im.lHand, s, _el, 0, -0.36,  0);
 
     // ── Right arm (X + optional Z rotation for fight stance) ─────────────────
     _mrx(_root, 0.295, 1.36, 0, a.rArmSwing, _ar);
     if (a.rArmZ !== 0) { _t2.makeRotationZ(a.rArmZ); _ar.multiply(_t2); }
-    _set(_im.ruArm, i, _ar, 0, -0.20, 0);
+    _set(_im.ruArm, s, _ar, 0, -0.20, 0);
     _mrx(_ar, 0, -0.40, 0, a.rElbowBend, _er);
-    _set(_im.rfArm, i, _er, 0, -0.175, 0);
-    _set(_im.rHand, i, _er, 0, -0.36,  0);
+    _set(_im.rfArm, s, _er, 0, -0.175, 0);
+    _set(_im.rHand, s, _er, 0, -0.36,  0);
 
     // ── Weapon ────────────────────────────────────────────────────────────────
-    _writeWeapon(a, i, _er);
+    _writeWeapon(a, s, _er);
 
     // ── Left leg ─────────────────────────────────────────────────────────────
     _mrx(_root, -0.13, 0.84, 0, a.lLegSwing, _ll);
-    _set(_im.lThigh, i, _ll, 0, -0.22, 0);
+    _set(_im.lThigh, s, _ll, 0, -0.22, 0);
     _mrx(_ll, 0, -0.44, 0, a.lKneeBend, _kl);
-    _set(_im.lShin, i, _kl, 0, -0.20, 0);
-    _set(_im.lFoot, i, _kl, 0, -0.42, 0.06);
+    _set(_im.lShin, s, _kl, 0, -0.20, 0);
+    _set(_im.lFoot, s, _kl, 0, -0.42, 0.06);
 
     // ── Right leg ────────────────────────────────────────────────────────────
     _mrx(_root, 0.13, 0.84, 0, a.rLegSwing, _lr);
-    _set(_im.rThigh, i, _lr, 0, -0.22, 0);
+    _set(_im.rThigh, s, _lr, 0, -0.22, 0);
     _mrx(_lr, 0, -0.44, 0, a.rKneeBend, _kr);
-    _set(_im.rShin, i, _kr, 0, -0.20, 0);
-    _set(_im.rFoot, i, _kr, 0, -0.42, 0.06);
+    _set(_im.rShin, s, _kr, 0, -0.20, 0);
+    _set(_im.rFoot, s, _kr, 0, -0.42, 0.06);
   }
 
-  // Mark all matrices dirty and set draw count
+  // Mark all matrices dirty; draw count = total registered slots
   for (const im of _allMeshes) {
-    im.count = n;
+    im.count = _count;
     im.instanceMatrix.needsUpdate = true;
   }
   // Flush instance colors (only meaningful data)

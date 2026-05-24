@@ -73,6 +73,7 @@ function handleRun(key, params) {
   const scenario = getScenario(key);
   if (!scenario) return;
   if (activeScenario) activeScenario.teardown(sceneCtx.scene);
+  resetRenderer();
   hideSummary();
   activeKey      = key;
   activeScenario = scenario;
