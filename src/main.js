@@ -13,6 +13,8 @@ import { updateStats, hideSummary } from './ui/stats.js';
 import { toggleTimeScale, isTimelapse } from './utils/timeScale.js';
 import { resumeAudio } from './utils/sound.js';
 import { updateEffects, clearEffects } from './utils/effects.js';
+import { initRenderer, updateRenderer, resetRenderer } from './entities/agentRenderer.js';
+import { agents } from './entities/agent.js';
 
 let sceneCtx       = null;
 let activeScenario = null;
@@ -29,6 +31,9 @@ async function bootstrap() {
 
   // ── Real-world terrain (async tile fetch) ──────────────────────────────────
   await createTerrain(scene, readLocation());
+
+  // ── Instanced agent renderer (supports 1000+ agents) ─────────────────────
+  initRenderer(scene, 1200);
 
   // ── UI ─────────────────────────────────────────────────────────────────────
   initControlPanel(handleRun, handleReset, handleLoadMap);
@@ -54,6 +59,7 @@ async function bootstrap() {
     (dt, simTime) => { if (activeScenario) activeScenario.update(dt, simTime); updateEffects(dt); },
     () => {
       controls.update();
+      updateRenderer(agents);
       const counts = activeScenario?.getCounts() ?? { alive: 0, dead: 0 };
       updateStats({ alive: counts.alive, dead: counts.dead, simTime: getSimTime(), fps: getFPS() });
       renderer.render(scene, camera);
@@ -80,6 +86,7 @@ function handleReset() {
     activeKey      = null;
   }
   clearEffects(sceneCtx.scene);
+  resetRenderer();
   hideSummary();
 }
 

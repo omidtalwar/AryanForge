@@ -1,67 +1,16 @@
 /**
- * agent.js — Humanoid agent: articulated mesh with knee/elbow joints, PBR materials,
- * terrain slope alignment, mixed weapons (gun / sword / knife), and visual effects.
+ * agent.js — Agent AI, state machine, and bone-value animation.
+ * Rendering is handled by agentRenderer.js (InstancedMesh).
+ * No Three.js Group/Mesh objects here — just data.
  */
 
-import * as THREE from 'three';
-import { createAgentBody, removeBody } from '../engine/physics.js';
 import { sampleHeightWorld } from './terrain.js';
 import { playDeath, playHit, playSplash, playGunshot } from '../utils/sound.js';
 import { spawnDeathEffect, spawnMuzzleFlash, spawnBulletTracer } from '../utils/effects.js';
+import { registerAgent } from './agentRenderer.js';
+import { createAgentBody, removeBody } from '../engine/physics.js';
+import { SpatialGrid } from '../utils/spatialGrid.js';
 
-// ── Shared geometries ─────────────────────────────────────────────────────────
-const G = {
-  head:       new THREE.SphereGeometry(0.21, 14, 10),
-  eyeWhite:   new THREE.SphereGeometry(0.046, 7, 6),
-  eyePupil:   new THREE.SphereGeometry(0.030, 6, 5),
-  helmet:     new THREE.SphereGeometry(0.238, 12, 9, 0, Math.PI * 2, 0, Math.PI * 0.58),
-  torso:      new THREE.CylinderGeometry(0.20, 0.24, 0.52, 9),
-  hip:        new THREE.CylinderGeometry(0.21, 0.19, 0.20, 9),
-  upperArm:   new THREE.CylinderGeometry(0.075, 0.068, 0.40, 8),
-  lowerArm:   new THREE.CylinderGeometry(0.063, 0.053, 0.35, 7),
-  hand:       new THREE.SphereGeometry(0.075, 8, 6),
-  upperLeg:   new THREE.CylinderGeometry(0.100, 0.088, 0.44, 8),
-  lowerLeg:   new THREE.CylinderGeometry(0.082, 0.076, 0.40, 7),
-  foot:       new THREE.BoxGeometry(0.13, 0.10, 0.26),
-  // Sword
-  sword:      new THREE.BoxGeometry(0.055, 0.72, 0.040),
-  swordGuard: new THREE.BoxGeometry(0.28,  0.055, 0.055),
-  // Knife
-  knife:      new THREE.BoxGeometry(0.032, 0.26, 0.018),
-  knifeGuard: new THREE.BoxGeometry(0.11,  0.040, 0.032),
-  // Gun
-  gunBody:    new THREE.BoxGeometry(0.068, 0.60, 0.068),
-  gunStock:   new THREE.BoxGeometry(0.055, 0.22, 0.055),
-  gunBarrelG: new THREE.CylinderGeometry(0.018, 0.018, 0.28, 6),
-  // Backpack
-  backpack:   new THREE.BoxGeometry(0.22, 0.28, 0.12),
-};
-
-// ── PBR materials ─────────────────────────────────────────────────────────────
-const M = {
-  skin:     new THREE.MeshStandardMaterial({ color: 0xf5c9a0, roughness: 0.82, metalness: 0.00 }),
-  dark:     new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.88, metalness: 0.12 }),
-  boot:     new THREE.MeshStandardMaterial({ color: 0x3a2810, roughness: 0.95, metalness: 0.00 }),
-  sword:    new THREE.MeshStandardMaterial({ color: 0xd4d4d8, roughness: 0.25, metalness: 0.85 }),
-  eye:      new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.50, metalness: 0.00 }),
-  pupil:    new THREE.MeshStandardMaterial({ color: 0x1a1a2a, roughness: 0.50, metalness: 0.00 }),
-  red:      new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.70, metalness: 0.05 }),
-  redH:     new THREE.MeshStandardMaterial({ color: 0x881111, roughness: 0.55, metalness: 0.25 }),
-  blue:     new THREE.MeshStandardMaterial({ color: 0x2255cc, roughness: 0.70, metalness: 0.05 }),
-  blueH:    new THREE.MeshStandardMaterial({ color: 0x113399, roughness: 0.55, metalness: 0.25 }),
-  white:    new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.78, metalness: 0.04 }),
-  whiteH:   new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.65, metalness: 0.15 }),
-  gunMetal: new THREE.MeshStandardMaterial({ color: 0x1c1c1c, roughness: 0.30, metalness: 0.90 }),
-  gunWood:  new THREE.MeshStandardMaterial({ color: 0x5c3a1e, roughness: 0.92, metalness: 0.00 }),
-};
-
-const TEAM_MATS = {
-  red:   [M.red,   M.redH],
-  blue:  [M.blue,  M.blueH],
-  white: [M.white, M.whiteH],
-};
-
-// Agent states
 export const STATE = {
   IDLE:   'idle',
   FLEE:   'flee',
@@ -73,14 +22,24 @@ export const STATE = {
 
 export const agents = [];
 
+// Module-level spatial grid shared by all agents (rebuilt each battle frame)
+const _grid = new SpatialGrid(12);
+export function rebuildGrid() {
+  _grid.clear();
+  for (const a of agents) if (a.alive) _grid.insert(a);
+}
+
 export function createAgent(scene, x, z, team = 'white', speed = 5, weaponType = 'none') {
   const a = new Agent(scene, x, z, team, speed, weaponType);
+  registerAgent(a);
   agents.push(a);
   return a;
 }
 
 export function clearAgents(scene) {
-  for (const a of agents) a.destroy(scene);
+  for (const a of agents) {
+    if (a.rigidBody) { removeBody(a.rigidBody); a.rigidBody = null; }
+  }
   agents.length = 0;
 }
 
@@ -88,21 +47,22 @@ export function clearAgents(scene) {
 
 class Agent {
   constructor(scene, x, z, team, speed, weaponType) {
+    this._scene     = scene;
     this.team       = team;
     this.speed      = speed;
+    this.weaponType = weaponType;
     this.hp         = 100;
     this.stamina    = 100;
     this.state      = STATE.IDLE;
     this.alive      = true;
-    this.weaponType = weaponType;  // 'gun' | 'sword' | 'knife' | 'none'
-    this._scene     = scene;
 
     this.x = x;
     this.y = sampleHeightWorld(x, z);
     this.z = z;
-
     this.vx = 0;
     this.vz = 0;
+
+    this.facing = Math.random() * Math.PI * 2;
     this.underWaterTime = 0;
     this.deadTimer      = 0;
     this.wanderAngle    = Math.random() * Math.PI * 2;
@@ -110,278 +70,27 @@ class Agent {
     this.attackTimer    = 0;
     this.target         = null;
     this._recoilTimer   = 0;
+    this._slopeTimer    = Math.floor(Math.random() * 6);
 
-    this.walkPhase = Math.random() * Math.PI * 2;
-    this._pitch    = 0;
-    this._roll     = 0;
+    // ── Bone values (read by agentRenderer each frame) ──────────────────────
+    this.lArmSwing   = 0;   this.rArmSwing  = 0;
+    this.lElbowBend  = 0;   this.rElbowBend = 0;
+    this.rArmZ       = 0;
+    this.lLegSwing   = 0;   this.rLegSwing  = 0;
+    this.lKneeBend   = 0;   this.rKneeBend  = 0;
+    this.walkPhase   = Math.random() * Math.PI * 2;
 
-    this._buildMesh(scene, team);
+    // ── Slope tilt (updated every 6 frames) ─────────────────────────────────
+    this._pitch      = 0;
+    this._roll       = 0;
 
-    const { rigidBody } = createAgentBody(this.x, this.y + 0.9, this.z);
+    // ── Death animation values ───────────────────────────────────────────────
+    this._deathRoll  = 0;
+    this._deathSinkY = 0;
+
+    // Physics body
+    const { rigidBody } = createAgentBody(x, this.y + 0.9, z);
     this.rigidBody = rigidBody;
-  }
-
-  // ── Mesh construction ──────────────────────────────────────────────────────
-
-  _buildMesh(scene, team) {
-    const [bodyMat, helmetMat] = TEAM_MATS[team] ?? TEAM_MATS.white;
-    const isBattle = (team === 'red' || team === 'blue');
-
-    this.group = new THREE.Group();
-    this.group.rotation.order = 'YXZ';
-
-    // HEAD
-    this.headMesh = new THREE.Mesh(G.head, M.skin);
-    this.headMesh.position.set(0, 1.60, 0);
-    this.headMesh.castShadow = true;
-    this.group.add(this.headMesh);
-
-    // Eyes
-    const lEye   = new THREE.Mesh(G.eyeWhite, M.eye);
-    lEye.position.set(-0.078, 1.615, 0.175);
-    const lPupil = new THREE.Mesh(G.eyePupil, M.pupil);
-    lPupil.position.set(-0.078, 1.612, 0.198);
-    const rEye   = new THREE.Mesh(G.eyeWhite, M.eye);
-    rEye.position.set( 0.078, 1.615, 0.175);
-    const rPupil = new THREE.Mesh(G.eyePupil, M.pupil);
-    rPupil.position.set( 0.078, 1.612, 0.198);
-    this.group.add(lEye, lPupil, rEye, rPupil);
-
-    // Helmet (battle agents only)
-    if (isBattle) {
-      const helm = new THREE.Mesh(G.helmet, helmetMat);
-      helm.position.set(0, 1.665, 0);
-      helm.castShadow = true;
-      this.group.add(helm);
-    }
-
-    // TORSO
-    this.torsoMesh = new THREE.Mesh(G.torso, bodyMat);
-    this.torsoMesh.position.set(0, 1.13, 0);
-    this.torsoMesh.castShadow = true;
-    this.group.add(this.torsoMesh);
-
-    // HIP
-    const hipMesh = new THREE.Mesh(G.hip, bodyMat);
-    hipMesh.position.set(0, 0.84, 0);
-    this.group.add(hipMesh);
-
-    // ── LEFT ARM ──────────────────────────────────────────────────────────────
-    this.lArmPivot = new THREE.Group();
-    this.lArmPivot.position.set(-0.295, 1.36, 0);
-    const lUpperArm = new THREE.Mesh(G.upperArm, bodyMat);
-    lUpperArm.position.y = -0.20;
-    lUpperArm.castShadow = true;
-    this.lArmPivot.add(lUpperArm);
-    this.lElbowPivot = new THREE.Group();
-    this.lElbowPivot.position.y = -0.40;
-    const lForearm = new THREE.Mesh(G.lowerArm, M.skin);
-    lForearm.position.y = -0.175;
-    this.lElbowPivot.add(lForearm);
-    const lHand = new THREE.Mesh(G.hand, M.skin);
-    lHand.position.y = -0.36;
-    this.lElbowPivot.add(lHand);
-    this.lArmPivot.add(this.lElbowPivot);
-    this.group.add(this.lArmPivot);
-
-    // ── RIGHT ARM ─────────────────────────────────────────────────────────────
-    this.rArmPivot = new THREE.Group();
-    this.rArmPivot.position.set(0.295, 1.36, 0);
-    const rUpperArm = new THREE.Mesh(G.upperArm, bodyMat);
-    rUpperArm.position.y = -0.20;
-    rUpperArm.castShadow = true;
-    this.rArmPivot.add(rUpperArm);
-    this.rElbowPivot = new THREE.Group();
-    this.rElbowPivot.position.y = -0.40;
-    const rForearm = new THREE.Mesh(G.lowerArm, M.skin);
-    rForearm.position.y = -0.175;
-    this.rElbowPivot.add(rForearm);
-    const rHand = new THREE.Mesh(G.hand, M.skin);
-    rHand.position.y = -0.36;
-    this.rElbowPivot.add(rHand);
-    this.rArmPivot.add(this.rElbowPivot);
-    this.group.add(this.rArmPivot);
-
-    // ── WEAPON ────────────────────────────────────────────────────────────────
-    if (this.weaponType === 'sword') {
-      const grp   = new THREE.Group();
-      grp.position.set(0, -0.36, 0);
-      const blade = new THREE.Mesh(G.sword, M.sword);
-      blade.position.y = 0.36;
-      grp.add(blade);
-      const guard = new THREE.Mesh(G.swordGuard, M.dark);
-      guard.position.y = 0.02;
-      grp.add(guard);
-      this.rElbowPivot.add(grp);
-      this.swordGrp = grp;
-
-    } else if (this.weaponType === 'knife') {
-      const grp   = new THREE.Group();
-      grp.position.set(0, -0.36, 0);
-      const blade = new THREE.Mesh(G.knife, M.sword);
-      blade.position.y = 0.15;
-      grp.add(blade);
-      const guard = new THREE.Mesh(G.knifeGuard, M.dark);
-      guard.position.y = 0.02;
-      grp.add(guard);
-      this.rElbowPivot.add(grp);
-      this.knifeGrp = grp;
-
-    } else if (this.weaponType === 'gun') {
-      // Rifle held in right hand; barrel along -Y of elbow pivot
-      // (becomes roughly +Z when arm raises forward for aiming)
-      this.gunGrp = new THREE.Group();
-      this.gunGrp.position.set(0.02, -0.36, 0.03);
-
-      const receiver = new THREE.Mesh(G.gunBody, M.gunMetal);
-      receiver.position.y = -0.18;
-      receiver.castShadow = true;
-      this.gunGrp.add(receiver);
-
-      const stock = new THREE.Mesh(G.gunStock, M.gunWood);
-      stock.position.set(0, 0.10, -0.02);
-      stock.rotation.x = 0.25;
-      this.gunGrp.add(stock);
-
-      // Barrel extension (thin cylinder)
-      const barrel = new THREE.Mesh(G.gunBarrelG, M.gunMetal);
-      barrel.position.y = -0.43;
-      this.gunGrp.add(barrel);
-
-      // Invisible reference point at barrel tip for muzzle flash
-      this.gunBarrelTip = new THREE.Object3D();
-      this.gunBarrelTip.position.y = -0.58;
-      this.gunGrp.add(this.gunBarrelTip);
-
-      this.rElbowPivot.add(this.gunGrp);
-    }
-
-    // Backpack for flood/endurance agents
-    if (team === 'white') {
-      const bp = new THREE.Mesh(G.backpack, M.dark);
-      bp.position.set(0, 1.10, -0.19);
-      this.group.add(bp);
-    }
-
-    // ── LEFT LEG ──────────────────────────────────────────────────────────────
-    this.lLegPivot = new THREE.Group();
-    this.lLegPivot.position.set(-0.13, 0.84, 0);
-    const lThigh = new THREE.Mesh(G.upperLeg, bodyMat);
-    lThigh.position.y = -0.22;
-    lThigh.castShadow = true;
-    this.lLegPivot.add(lThigh);
-    this.lKneePivot = new THREE.Group();
-    this.lKneePivot.position.y = -0.44;
-    const lShin = new THREE.Mesh(G.lowerLeg, M.dark);
-    lShin.position.y = -0.20;
-    this.lKneePivot.add(lShin);
-    const lFoot = new THREE.Mesh(G.foot, M.boot);
-    lFoot.position.set(0, -0.42, 0.06);
-    this.lKneePivot.add(lFoot);
-    this.lLegPivot.add(this.lKneePivot);
-    this.group.add(this.lLegPivot);
-
-    // ── RIGHT LEG ─────────────────────────────────────────────────────────────
-    this.rLegPivot = new THREE.Group();
-    this.rLegPivot.position.set(0.13, 0.84, 0);
-    const rThigh = new THREE.Mesh(G.upperLeg, bodyMat);
-    rThigh.position.y = -0.22;
-    rThigh.castShadow = true;
-    this.rLegPivot.add(rThigh);
-    this.rKneePivot = new THREE.Group();
-    this.rKneePivot.position.y = -0.44;
-    const rShin = new THREE.Mesh(G.lowerLeg, M.dark);
-    rShin.position.y = -0.20;
-    this.rKneePivot.add(rShin);
-    const rFoot = new THREE.Mesh(G.foot, M.boot);
-    rFoot.position.set(0, -0.42, 0.06);
-    this.rKneePivot.add(rFoot);
-    this.rLegPivot.add(this.rKneePivot);
-    this.group.add(this.rLegPivot);
-
-    // Collect all meshes for death fade
-    this._parts = [];
-    this.group.traverse(obj => { if (obj.isMesh) this._parts.push(obj); });
-
-    this.group.position.set(this.x, this.y, this.z);
-    scene.add(this.group);
-  }
-
-  // ── Walk-cycle + combat animation ─────────────────────────────────────────
-
-  _animateWalk(dt, moving, fighting) {
-    const spd = moving ? this.speed : 0;
-    this.walkPhase += spd * dt * 2.5;
-
-    const swing   = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
-    const bodyBob = moving ? Math.abs(Math.sin(this.walkPhase)) * 0.04 : 0;
-
-    // Legs with knee bend
-    this.lLegPivot.rotation.x  = -swing;
-    this.lKneePivot.rotation.x =  Math.max(0,  swing) * 0.55;
-    this.rLegPivot.rotation.x  =  swing;
-    this.rKneePivot.rotation.x =  Math.max(0, -swing) * 0.55;
-
-    // Arms — weapon-specific poses
-    if (this.weaponType === 'gun' && fighting && this.target?.alive) {
-      // Aim rifle forward
-      const recoilKick = this._recoilTimer > 0 ? this._recoilTimer * 3.5 : 0;
-      this.rArmPivot.rotation.x   = -0.82 + recoilKick;
-      this.rArmPivot.rotation.z   = -0.12;
-      this.rElbowPivot.rotation.x =  0.36;
-      this.lArmPivot.rotation.x   = -0.52;   // support hand under barrel
-      this.lElbowPivot.rotation.x =  0.62;
-
-    } else if (this.weaponType === 'gun') {
-      // Carry at side while moving
-      this.rArmPivot.rotation.x   = -swing * 0.28;
-      this.rArmPivot.rotation.z   = -0.10;
-      this.rElbowPivot.rotation.x =  0.18;
-      this.lArmPivot.rotation.x   =  swing * 0.28;
-      this.lElbowPivot.rotation.x =  Math.max(0, swing * 0.28) * 0.20;
-
-    } else if ((this.weaponType === 'sword' || this.weaponType === 'knife') && fighting) {
-      const mult = this.weaponType === 'knife' ? 1.45 : 1.0;
-      this.rArmPivot.rotation.x   = -1.0 + Math.sin(this.walkPhase * 3) * 0.35 * mult;
-      this.rArmPivot.rotation.z   = -0.30;
-      this.rElbowPivot.rotation.x =  0.55 + Math.sin(this.walkPhase * 3) * 0.18 * mult;
-      this.lArmPivot.rotation.x   =  swing * 0.50;
-      this.lElbowPivot.rotation.x =  Math.max(0, swing * 0.5) * 0.25;
-
-    } else {
-      // Natural walking swing
-      this.lArmPivot.rotation.x   =  swing;
-      this.lElbowPivot.rotation.x =  Math.max(0,  swing) * 0.28;
-      this.rArmPivot.rotation.x   = -swing;
-      this.rArmPivot.rotation.z   =  0;
-      this.rElbowPivot.rotation.x =  Math.max(0, -swing) * 0.28;
-    }
-
-    if (this._recoilTimer > 0) this._recoilTimer -= dt;
-
-    this.group.position.y = this.y + bodyBob;
-  }
-
-  // ── Terrain slope alignment ────────────────────────────────────────────────
-
-  _alignToSlope() {
-    const e  = 1.0;
-    const fy = this.group.rotation.y;
-    const sx = Math.sin(fy), cz = Math.cos(fy);
-
-    const hFwd = sampleHeightWorld(this.x + sx * e, this.z + cz * e);
-    const hBwd = sampleHeightWorld(this.x - sx * e, this.z - cz * e);
-    const hR   = sampleHeightWorld(this.x + cz * e, this.z - sx * e);
-    const hL   = sampleHeightWorld(this.x - cz * e, this.z + sx * e);
-
-    const targetPitch = Math.atan2(hFwd - hBwd, 2 * e) * 0.60;
-    const targetRoll  = Math.atan2(hL   - hR,   2 * e) * 0.55;
-
-    this._pitch += (targetPitch - this._pitch) * 0.12;
-    this._roll  += (targetRoll  - this._roll)  * 0.12;
-
-    this.group.rotation.x = this._pitch;
-    this.group.rotation.z = this._roll;
   }
 
   // ── Per-tick update ────────────────────────────────────────────────────────
@@ -389,27 +98,27 @@ class Agent {
   update(dt, hints = {}) {
     if (!this.alive) { this._updateDead(dt); return; }
 
-    let moving   = false;
-    let fighting = false;
+    let moving = false, fighting = false;
 
     switch (this.state) {
-      case STATE.FLEE:   this._updateFlee(dt, hints);  moving   = true; break;
-      case STATE.FIGHT:  this._updateFight(dt, hints); fighting = true; break;
-      case STATE.TIRED:  this._updateTired(dt); break;
-      case STATE.WANDER: this._updateWander(dt, hints); moving  = true; break;
+      case STATE.FLEE:   this._updateFlee(dt, hints);   moving   = true; break;
+      case STATE.FIGHT:  this._updateFight(dt, hints);  fighting = true; break;
+      case STATE.TIRED:  this.vx = 0; this.vz = 0;      break;
+      case STATE.WANDER: this._updateWander(dt, hints); moving   = true; break;
     }
 
     const groundY = sampleHeightWorld(this.x, this.z);
     if (this.y < groundY) this.y = groundY;
 
+    // Face movement direction
     const spd = Math.sqrt(this.vx * this.vx + this.vz * this.vz);
-    if (spd > 0.05) this.group.rotation.y = Math.atan2(this.vx, this.vz);
+    if (spd > 0.05) this.facing = Math.atan2(this.vx, this.vz);
 
-    this._alignToSlope();
+    // Slope alignment (throttled — every 6 frames)
+    if (--this._slopeTimer <= 0) { this._slopeTimer = 6; this._alignToSlope(); }
+
+    // Animate bones
     this._animateWalk(dt, moving || (fighting && spd > 0.05), fighting);
-
-    this.group.position.x = this.x;
-    this.group.position.z = this.z;
 
     if (this.rigidBody) {
       this.rigidBody.setNextKinematicTranslation({ x: this.x, y: this.y + 0.9, z: this.z });
@@ -419,16 +128,14 @@ class Agent {
   // ── State handlers ─────────────────────────────────────────────────────────
 
   _updateFlee(dt, { waterY = -999 }) {
-    const myGroundY = sampleHeightWorld(this.x, this.z);
-    const safe = myGroundY > waterY + 1.0;
+    const myY  = sampleHeightWorld(this.x, this.z);
+    const safe = myY > waterY + 1.0;
 
     if (!safe) {
       let bestH = -Infinity, bestDx = 0, bestDz = 0;
       for (let i = 0; i < 8; i++) {
         const ang = (i / 8) * Math.PI * 2 + this.wanderAngle * 0.12;
-        const tx  = this.x + Math.cos(ang) * 7;
-        const tz  = this.z + Math.sin(ang) * 7;
-        const h   = sampleHeightWorld(tx, tz);
+        const h   = sampleHeightWorld(this.x + Math.cos(ang) * 7, this.z + Math.sin(ang) * 7);
         if (h > bestH) { bestH = h; bestDx = Math.cos(ang); bestDz = Math.sin(ang); }
       }
       this.vx = bestDx * this.speed;
@@ -436,7 +143,6 @@ class Agent {
     } else {
       this._wander(dt, 0.6);
     }
-
     this.x += this.vx * dt;
     this.z += this.vz * dt;
     this._clamp();
@@ -445,9 +151,7 @@ class Agent {
   _updateFight(dt, { attackRange = 2, allAgents = [] }) {
     this.attackTimer -= dt;
 
-    if (!this.target || !this.target.alive) {
-      this.target = this._nearestEnemy(allAgents);
-    }
+    if (!this.target?.alive) this.target = this._nearestEnemy();
     if (!this.target) { this.vx = 0; this.vz = 0; return; }
 
     const dx   = this.target.x - this.x;
@@ -455,49 +159,30 @@ class Agent {
     const dist = Math.sqrt(dx * dx + dz * dz);
 
     if (this.weaponType === 'gun') {
-      const idealDist = 10;
-      const maxRange  = 20;
-
+      const ideal  = 10, maxRange = 20;
       if (dist > maxRange) {
-        // Close in
         this.vx = (dx / dist) * this.speed;
         this.vz = (dz / dist) * this.speed;
-        this.x += this.vx * dt;
-        this.z += this.vz * dt;
-        this._clamp();
+        this.x += this.vx * dt; this.z += this.vz * dt; this._clamp();
       } else {
-        // Strafe to maintain ideal standoff distance
-        if (dist < idealDist - 2.5) {
-          this.vx = -(dx / dist) * this.speed * 0.55;
-          this.vz = -(dz / dist) * this.speed * 0.55;
-          this.x += this.vx * dt;
-          this.z += this.vz * dt;
-          this._clamp();
-        } else if (dist > idealDist + 3.5) {
-          this.vx = (dx / dist) * this.speed * 0.6;
-          this.vz = (dz / dist) * this.speed * 0.6;
-          this.x += this.vx * dt;
-          this.z += this.vz * dt;
-          this._clamp();
-        } else {
-          this.vx = 0; this.vz = 0;
-        }
+        const pullIn  = dist > ideal + 3.5;
+        const backOff = dist < ideal - 2.5;
+        if (pullIn)      { this.vx = (dx / dist) * this.speed * 0.6; this.vz = (dz / dist) * this.speed * 0.6; }
+        else if (backOff){ this.vx = -(dx / dist) * this.speed * 0.5; this.vz = -(dz / dist) * this.speed * 0.5; }
+        else             { this.vx = 0; this.vz = 0; }
+        this.x += this.vx * dt; this.z += this.vz * dt; this._clamp();
         if (this.attackTimer <= 0) this._fireAtTarget();
       }
     } else {
-      // Melee — knife slightly shorter range, faster
-      const meleeRange = this.weaponType === 'knife' ? attackRange * 0.75 : attackRange;
-
-      if (dist > meleeRange) {
+      const mRange = this.weaponType === 'knife' ? attackRange * 0.75 : attackRange;
+      if (dist > mRange) {
         this.vx = (dx / dist) * this.speed;
         this.vz = (dz / dist) * this.speed;
-        this.x += this.vx * dt;
-        this.z += this.vz * dt;
-        this._clamp();
+        this.x += this.vx * dt; this.z += this.vz * dt; this._clamp();
       } else {
         this.vx = 0; this.vz = 0;
         if (this.attackTimer <= 0) {
-          const dmg  = this.weaponType === 'knife' ? 2 : 1;
+          const dmg  = this.weaponType === 'knife' ? 2  : 1;
           const rate = this.weaponType === 'knife' ? 1 / 14 : 1 / 10;
           this.target.hp -= dmg;
           this.attackTimer = rate;
@@ -512,21 +197,19 @@ class Agent {
     if (!this.target?.alive) return;
     this.attackTimer  = 0.45;
     this._recoilTimer = 0.14;
-
     playGunshot();
 
-    // World position of barrel tip
-    const muzzle = new THREE.Vector3();
-    if (this.gunBarrelTip) {
-      this.gunBarrelTip.getWorldPosition(muzzle);
-    } else {
-      muzzle.set(this.x, this.y + 1.3, this.z);
-    }
+    // Approximate muzzle position (arm raised, gun pointing forward)
+    const fwdX   = Math.sin(this.facing);
+    const fwdZ   = Math.cos(this.facing);
+    const muzzleX = this.x + fwdX * 0.5;
+    const muzzleY = this.y + 1.25;
+    const muzzleZ = this.z + fwdZ * 0.5;
 
-    spawnMuzzleFlash(this._scene, muzzle.x, muzzle.y, muzzle.z);
+    spawnMuzzleFlash(this._scene, muzzleX, muzzleY, muzzleZ);
     spawnBulletTracer(
       this._scene,
-      muzzle.x, muzzle.y, muzzle.z,
+      muzzleX, muzzleY, muzzleZ,
       this.target.x, this.target.y + 0.9, this.target.z,
     );
 
@@ -534,45 +217,93 @@ class Agent {
     if (this.target.hp <= 0) { this.target.die(); this.target = null; }
   }
 
-  _updateTired(dt) {
-    this.vx = 0; this.vz = 0;
-  }
-
   _updateWander(dt, { difficulty = 1 }) {
     this._wander(dt, this.speed);
-
     const slope = sampleHeightWorld(this.x + 0.5, this.z) - sampleHeightWorld(this.x - 0.5, this.z);
-    const drain = (Math.abs(slope) * 2 + 0.5) * difficulty * dt;
-    this.stamina = Math.max(0, this.stamina - drain);
-
+    this.stamina = Math.max(0, this.stamina - (Math.abs(slope) * 2 + 0.5) * difficulty * dt);
     if (this.stamina <= 0) { this.state = STATE.TIRED; this.die(); return; }
-
-    this.x += this.vx * dt;
-    this.z += this.vz * dt;
-    this._clamp();
+    this.x += this.vx * dt; this.z += this.vz * dt; this._clamp();
   }
 
   _updateDead(dt) {
-    this.deadTimer += dt;
+    this.deadTimer     += dt;
+    this._deathRoll     = Math.min(this.deadTimer * 3, Math.PI / 2);
+    if (this.deadTimer > 1.0) this._deathSinkY -= 0.35 * dt;
+  }
 
-    const fallAngle = Math.min(this.deadTimer * 3, Math.PI / 2);
-    this.group.rotation.z = fallAngle;
+  // ── Animation (writes to bone values read by renderer) ─────────────────────
 
-    if (this.deadTimer > 1) {
-      this.group.position.y -= 0.4 * dt;
-      const opacity = Math.max(0, 1 - (this.deadTimer - 1) / 2.5);
-      for (const m of this._parts) {
-        if (m.material && !m.material._fadePrepared) {
-          m.material = m.material.clone();
-          m.material.transparent = true;
-          m.material._fadePrepared = true;
-        }
-        if (m.material?._fadePrepared) m.material.opacity = opacity;
-      }
+  _animateWalk(dt, moving, fighting) {
+    const spd = moving ? this.speed : 0;
+    this.walkPhase += spd * dt * 2.5;
+
+    const swing    = moving ? Math.sin(this.walkPhase) * 0.55 : 0;
+
+    // Leg / knee
+    this.lLegSwing  = -swing;
+    this.lKneeBend  = Math.max(0,  swing) * 0.55;
+    this.rLegSwing  =  swing;
+    this.rKneeBend  = Math.max(0, -swing) * 0.55;
+
+    if (this._recoilTimer > 0) this._recoilTimer -= dt;
+
+    // Arm poses
+    if (this.weaponType === 'gun' && fighting && this.target?.alive) {
+      const kick = this._recoilTimer > 0 ? this._recoilTimer * 3.5 : 0;
+      this.rArmSwing  = -0.82 + kick;
+      this.rArmZ      = -0.12;
+      this.rElbowBend =  0.36;
+      this.lArmSwing  = -0.52;
+      this.lElbowBend =  0.62;
+    } else if (this.weaponType === 'gun') {
+      this.rArmSwing  = -swing * 0.28;
+      this.rArmZ      = -0.10;
+      this.rElbowBend =  0.18;
+      this.lArmSwing  =  swing * 0.28;
+      this.lElbowBend =  Math.max(0, swing * 0.28) * 0.20;
+    } else if ((this.weaponType === 'sword' || this.weaponType === 'knife') && fighting) {
+      const m         = this.weaponType === 'knife' ? 1.45 : 1.0;
+      this.rArmSwing  = -1.0 + Math.sin(this.walkPhase * 3) * 0.35 * m;
+      this.rArmZ      = -0.30;
+      this.rElbowBend =  0.55 + Math.sin(this.walkPhase * 3) * 0.18 * m;
+      this.lArmSwing  =  swing * 0.50;
+      this.lElbowBend =  Math.max(0, swing * 0.5) * 0.25;
+    } else {
+      this.lArmSwing  =  swing;
+      this.lElbowBend =  Math.max(0,  swing) * 0.28;
+      this.rArmSwing  = -swing;
+      this.rArmZ      =  0;
+      this.rElbowBend =  Math.max(0, -swing) * 0.28;
     }
   }
 
+  // ── Slope alignment (called every 6 frames) ────────────────────────────────
+
+  _alignToSlope() {
+    const e  = 1.0;
+    const sx = Math.sin(this.facing), cz = Math.cos(this.facing);
+    const hF = sampleHeightWorld(this.x + sx * e, this.z + cz * e);
+    const hB = sampleHeightWorld(this.x - sx * e, this.z - cz * e);
+    const hR = sampleHeightWorld(this.x + cz * e, this.z - sx * e);
+    const hL = sampleHeightWorld(this.x - cz * e, this.z + sx * e);
+    const tp = Math.atan2(hF - hB, 2 * e) * 0.60;
+    const tr = Math.atan2(hL - hR, 2 * e) * 0.55;
+    this._pitch += (tp - this._pitch) * 0.20;
+    this._roll  += (tr - this._roll)  * 0.20;
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  _nearestEnemy() {
+    const candidates = _grid.query(this.x, this.z, 28);
+    let best = null, bestD = Infinity;
+    for (const a of candidates) {
+      if (!a.alive || a.team === this.team) continue;
+      const d = (a.x - this.x) ** 2 + (a.z - this.z) ** 2;
+      if (d < bestD) { bestD = d; best = a; }
+    }
+    return best;
+  }
 
   _wander(dt, spd) {
     this.wanderTimer -= dt;
@@ -582,16 +313,6 @@ class Agent {
     }
     this.vx = Math.cos(this.wanderAngle) * spd;
     this.vz = Math.sin(this.wanderAngle) * spd;
-  }
-
-  _nearestEnemy(all) {
-    let best = null, bestD = Infinity;
-    for (const a of all) {
-      if (!a.alive || a.team === this.team) continue;
-      const d = (a.x - this.x) ** 2 + (a.z - this.z) ** 2;
-      if (d < bestD) { bestD = d; best = a; }
-    }
-    return best;
   }
 
   _clamp() {
@@ -605,21 +326,12 @@ class Agent {
     this.alive = false;
     this.state = STATE.DEAD;
     this.vx = 0; this.vz = 0;
-
-    if (this.underWaterTime > 0) playSplash();
-    else playDeath();
-
+    if (this.underWaterTime > 0) playSplash(); else playDeath();
     spawnDeathEffect(this._scene, this.x, this.y + 0.9, this.z);
-
-    if (this.rigidBody) { removeBody(this.rigidBody); this.rigidBody = null; }
-  }
-
-  destroy(scene) {
-    scene.remove(this.group);
     if (this.rigidBody) { removeBody(this.rigidBody); this.rigidBody = null; }
   }
 
   isDoneDecaying() {
-    return !this.alive && this.deadTimer > 3.8;
+    return !this.alive && this.deadTimer > 2.5;
   }
 }
