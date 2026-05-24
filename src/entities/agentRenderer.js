@@ -128,6 +128,13 @@ export function initRenderer(scene, maxAgents = 1200) {
   _im.gunBrl  = mk(G.gunBarrel, mGunMetal);
 
   _allMeshes = Object.values(_im);
+
+  // Pre-fill instanceColor buffers so no slot is ever uninitialized black
+  const _white = new THREE.Color(1, 1, 1);
+  for (const k of [..._TEAM_PARTS, ..._HELMET_PARTS]) {
+    for (let i = 0; i < _max; i++) _im[k].setColorAt(i, _white);
+    _im[k].instanceColor.needsUpdate = true;
+  }
 }
 
 // ── Register a new agent (called once per createAgent) ─────────────────────────

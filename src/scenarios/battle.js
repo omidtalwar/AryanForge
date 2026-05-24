@@ -4,7 +4,7 @@
  * Gun agents shoot from range; melee agents close in and attack.
  */
 
-import { createAgent, clearAgents, agents, STATE, rebuildGrid } from '../entities/agent.js';
+import { createAgent, clearAgents, agents, STATE } from '../entities/agent.js';
 import { showSummary } from '../ui/stats.js';
 import { startBattleAmbient, stopAmbient, playVictory } from '../utils/sound.js';
 
@@ -50,7 +50,6 @@ export const battle = {
   update(dt, simTime) {
     if (!started || done) return;
 
-    rebuildGrid();
     const hints = { attackRange, allAgents: agents };
     for (const a of agents) a.update(dt, hints);
 
